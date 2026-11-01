@@ -1,0 +1,51 @@
+name: Build IPA
+
+# Unsigned build for AltStore sideloading with a free Apple ID.
+# No signing identity, no entitlements, no paid Apple Developer account.
+# AltStore re-signs the IPA on the device when you install it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen and CocoaPods
+        run: |
+          brew install xcodegen
+          pod --version || sudo gem install cocoapods -N
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Install pods
+        run: pod install
+
+      - name: Build and archive (unsigned)
+        run: |
+          xcodebuild -workspace CastRemote.xcworkspace \
+            -scheme CastRemote \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/CastRemote.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=""
+
+      - name: Package IPA
+        run: |
+          APP_PATH=$(echo build/CastRemote.xcarchive/Products/Applications/*.app)
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r CastRemote.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CastRemote-ipa
+          path: CastRemote.ipa
+          retention-days: 30

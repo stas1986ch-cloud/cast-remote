@@ -1,0 +1,27 @@
+name: CastRemote
+options:
+  bundleIdPrefix: com.stas
+  deploymentTarget: "16.0"
+targets:
+  CastRemote:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Cast Remote
+        NSLocalNetworkUsageDescription: "Cast Remote finds TVs and phones on your Wi-Fi to cast YouTube to them."
+        NSBonjourServices:
+          - _googlecast._tcp
+          - _castremote._tcp
+        LSApplicationQueriesSchemes:
+          - youtube
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.stas.castremote
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_VERSION: "5.0"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
