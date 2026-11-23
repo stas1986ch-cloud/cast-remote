@@ -1,0 +1,17 @@
+*.apk
+*.err
+*.log
+*.png
+*.ps1
+*.bak
+*.txt
+/*.xml
+/b64_*.py
+/v26_*.py
+local.properties
+/mirror_test.py
+.kotlin/
+.gradle/
+build/
+app/build/
+**/__pycache__/

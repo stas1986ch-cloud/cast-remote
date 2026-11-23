@@ -1,0 +1,74 @@
+plugins {
+    id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+    id "com.chaquo.python"
+}
+
+android {
+    namespace "com.stas.castremote"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.stas.castremote"
+        minSdk 26
+        targetSdk 35
+        versionCode 24
+        versionName "3.2.0"
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+configurations.all {
+    resolutionStrategy.eachDependency { details ->
+        if (details.requested.group == 'org.jetbrains.kotlinx' && details.requested.name.startsWith('kotlinx-coroutines')) {
+            details.useVersion '1.11.0'
+        }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        def winPy = "C:/Users/schul/AppData/Local/Programs/Python/Python311/python.exe"
+        if (new File(winPy).exists()) {
+            buildPython(winPy)
+        } else {
+            buildPython("python3")
+        }
+        pip {
+            install("pychromecast")
+            install("rsa")
+        }
+    }
+}
+
+dependencies {
+    implementation "com.google.android.gms:play-services-home:17.1.0"
+    implementation "com.google.android.gms:play-services-home-types:17.1.0"
+    implementation "androidx.activity:activity-ktx:1.9.3"
+    implementation "androidx.core:core-ktx:1.13.1"
+    implementation "androidx.lifecycle:lifecycle-runtime-ktx:2.8.7"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0"
+}

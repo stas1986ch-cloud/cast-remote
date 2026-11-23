@@ -20,23 +20,30 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Set up Python 3.11 for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      - name: Build Android APK
-        working-directory: android
+      - name: Build Cast Remote v3.2.0 APK
+        working-directory: cast-remote
         run: gradle assembleDebug --no-daemon
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk CastRemote.apk
+        run: |
+          cp cast-remote/app/build/outputs/apk/debug/app-debug.apk CastRemote.apk
+          cp CastRemote.apk CastRemote-v3.2.0.apk
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CastRemote-apk
-          path: CastRemote.apk
+          name: CastRemote-v3.2.0-apk
+          path: CastRemote-v3.2.0.apk
           retention-days: 30
 
       - name: Publish Release APK
@@ -44,7 +51,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest CastRemote.apk --clobber
+            gh release upload latest CastRemote.apk CastRemote-v3.2.0.apk --clobber
           else
-            gh release create latest CastRemote.apk --title "Cast Remote (Latest)" --notes "Direct Android APK install build (pin favorites + TV power on/off + Cast/Mirror)."
+            gh release create latest CastRemote.apk CastRemote-v3.2.0.apk --title "Cast Remote v3.2.0 (Latest)" --notes "Enhanced Cast Remote v3.2.0 (built on Muse's v3.1.1): favorite device pinning, Android TV Remote v2 Power On/Off + Cast fallback, Google Home devices, and bug fixes."
           fi
