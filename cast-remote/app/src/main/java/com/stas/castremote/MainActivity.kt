@@ -570,7 +570,7 @@ class MainActivity : Activity() {
                 }
                 val btnPair = Button(this).apply {
                     text = if (isPaired) "Paired ✓" else "Pair TV"
-                    setTextColor(if (isPaired) emerald else text)
+                    setTextColor(if (isPaired) emerald else this@MainActivity.text)
                     setBackgroundColor(darkBtn)
                     textSize = 12f
                     setPadding(dp(8), dp(6), dp(8), dp(6))
@@ -702,7 +702,7 @@ class MainActivity : Activity() {
         val input = EditText(this).apply {
             hint = "e.g. A1B2C3"
             inputType = InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setTextColor(text)
+            setTextColor(this@MainActivity.text)
             setHintTextColor(Color.parseColor("#9CA3AF"))
             setBackgroundColor(bg)
             setPadding(dp(12), dp(12), dp(12), dp(12))
