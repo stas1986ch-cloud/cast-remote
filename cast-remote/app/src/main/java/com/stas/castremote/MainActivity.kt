@@ -7,10 +7,10 @@
 
 package com.stas.castremote
 
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import androidx.activity.ComponentActivity
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Shader
@@ -57,7 +57,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
 
     private lateinit var linkInput: EditText
     private lateinit var statusText: TextView
@@ -110,6 +110,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashCapture.install(this)
+        GoogleHomePowerManager.registerActivity(this)
         atvRemote = AndroidTVRemoteManager(this)
         val prefs = getSharedPreferences("cast_remote_prefs", Context.MODE_PRIVATE)
         pinnedDevices = prefs.getStringSet("pinned_device_names", emptySet())?.toMutableSet() ?: mutableSetOf()
@@ -738,26 +739,35 @@ class MainActivity : Activity() {
     }
 
     private fun powerOn(name: String, host: String) {
-        if (host.isEmpty()) {
-            setStatus("No host for $name - tap Refresh casting devices first.")
-            return
-        }
-        if (atvRemote.isPaired(name)) {
-            showProgress("Turning on $name...")
-            uiScope.launch {
+        showProgress("Turning on $name via Google Home...")
+        setStatus("Turning on $name via Google Home...")
+        uiScope.launch {
+            // 1. Primary path: Google Home SDK OnOff.on() — exact same TV power path as Google Assistant.
+            val homeRes = GoogleHomePowerManager.setPower(this@MainActivity, name, turnOn = true)
+            if (homeRes.isSuccess) {
+                val matched = homeRes.getOrNull() ?: name
+                hideProgress()
+                setStatus("Turned ON $matched via Google Home.")
+                setDeviceStatus(name, "Power: ON (Google Home)")
+                return@launch
+            }
+
+            // 2. Fallback: Android TV Remote v2 if paired.
+            if (host.isNotEmpty() && atvRemote.isPaired(name)) {
                 try {
                     atvRemote.sendPower(name, host, TVPowerAction.POWER_ON)
                     hideProgress()
-                    setStatus("Turned on $name.")
-                    setDeviceStatus(name, "Power: ON")
+                    setStatus("Turned ON $name via Android TV Remote.")
+                    setDeviceStatus(name, "Power: ON (TV Remote)")
                     return@launch
                 } catch (_: Exception) {
-                    hideProgress()
-                    // Fall through to Cast HDMI-CEC wake if TV remote socket is asleep.
                 }
-                wakeViaCastFallback(name)
             }
-        } else {
+
+            // 3. Fallback: Cast HDMI-CEC wake.
+            hideProgress()
+            val homeErr = homeRes.exceptionOrNull()?.message ?: "unavailable"
+            DiagLog.log(this@MainActivity, "Google Home Turn On fallback for $name: $homeErr")
             wakeViaCastFallback(name)
         }
     }
@@ -766,7 +776,7 @@ class MainActivity : Activity() {
         runPy("waking " + name, { py().callAttr("wake_device", name).toString() }) { res ->
             val o = runCatching { JSONObject(res) }.getOrNull()
             if (o?.optBoolean("ok", false) == true) {
-                setStatus("Woke $name via Cast (tap Pair TV for full TV Power On/Off).")
+                setStatus("Woke $name via Cast HDMI-CEC.")
                 setDeviceStatus(name, "Power: Woke via Cast")
             } else {
                 val err = o?.optString("error", res) ?: res
@@ -777,48 +787,53 @@ class MainActivity : Activity() {
     }
 
     private fun powerOff(name: String, host: String) {
-        if (host.isEmpty()) {
-            setStatus("No host for $name - tap Refresh casting devices first.")
-            return
-        }
-        if (atvRemote.isPaired(name)) {
-            showProgress("Turning off $name...")
-            uiScope.launch {
+        showProgress("Turning off $name via Google Home...")
+        setStatus("Turning off $name via Google Home...")
+        uiScope.launch {
+            // 1. Primary path: Google Home SDK OnOff.off() — exact same TV shutdown path as Google Assistant.
+            val homeRes = GoogleHomePowerManager.setPower(this@MainActivity, name, turnOn = false)
+            if (homeRes.isSuccess) {
+                val matched = homeRes.getOrNull() ?: name
+                hideProgress()
+                setStatus("Turned OFF $matched via Google Home.")
+                setDeviceStatus(name, "Power: OFF (Google Home)")
+                return@launch
+            }
+
+            val homeErr = homeRes.exceptionOrNull()?.message ?: "Google Home OnOff unavailable"
+            DiagLog.log(this@MainActivity, "Google Home Turn Off failed for $name: $homeErr")
+
+            // 2. Fallback: Android TV Remote v2 if paired.
+            if (host.isNotEmpty() && atvRemote.isPaired(name)) {
                 try {
                     atvRemote.sendPower(name, host, TVPowerAction.POWER_OFF)
                     hideProgress()
-                    setStatus("Turned off $name.")
-                    setDeviceStatus(name, "Power: OFF")
+                    setStatus("Turned OFF $name via Android TV Remote.")
+                    setDeviceStatus(name, "Power: OFF (TV Remote)")
+                    return@launch
                 } catch (e: Exception) {
-                    showProgressError("Power off failed: ${e.message}")
-                    setStatus("Turn off $name failed: ${e.message}")
-                    setDeviceStatus(name, "Power off failed: ${e.message}")
+                    showProgressError("Turn off failed: ${e.message}")
+                    setStatus("Turn off $name failed (Google Home: $homeErr; TV Remote: ${e.message}).")
+                    setDeviceStatus(name, "Power off failed")
+                    return@launch
                 }
             }
-            return
-        }
 
-        // Not paired yet: try Android TV Remote v2 pairing first; if unsupported (legacy Chromecast),
-        // fall back to ADB sleep and then Cast stop-to-idle.
-        showProgress("Checking $name for TV power support...")
-        uiScope.launch {
-            try {
-                atvRemote.beginPairing(name, name, host)
-                hideProgress()
-                showPairingPinDialog(name)
-                return@launch
-            } catch (_: Exception) {
-                hideProgress()
-            }
-            runPy("stopping " + name, { py().callAttr("stop_device", name).toString() }) { res ->
-                val o = runCatching { JSONObject(res) }.getOrNull()
-                if (o?.optBoolean("ok", false) == true) {
-                    setStatus("Stopped $name to idle (legacy Chromecast without Android TV has no TV power-off API).")
-                    setDeviceStatus(name, "Stopped to idle")
-                } else {
-                    setStatus("Power off $name failed: ${o?.optString("error", res) ?: res}")
+            // 3. Fallback: try Android TV Remote v2 PIN pairing if port 6467 is open.
+            if (host.isNotEmpty()) {
+                try {
+                    atvRemote.beginPairing(name, name, host)
+                    hideProgress()
+                    showPairingPinDialog(name)
+                    return@launch
+                } catch (_: Exception) {
                 }
             }
+
+            // Do NOT silently stop the Chromecast stream and pretend the TV turned off.
+            showProgressError("TV power off unavailable: $homeErr")
+            setStatus("Could not turn off $name ($homeErr). Check Google Home permission or tap Home devices.")
+            setDeviceStatus(name, "Power off failed: $homeErr")
         }
     }
 

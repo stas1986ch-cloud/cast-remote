@@ -1,3 +1,10 @@
+/**
+ * @file HomeDevicesActivity.kt
+ * @summary Google Home SDK device control screen with cached tiles, favorite pinning, and Turn On / Turn Off power commands.
+ * @description Lists all Google Home structures and devices, shares live HomeDevice objects with GoogleHomePowerManager, and executes OnOff.on()/OnOff.off().
+ * @testing Compiled cleanly with Google Home SDK 17.1.0 via Gradle 8.9.
+ */
+
 package com.stas.castremote
 
 import android.content.Context
@@ -64,7 +71,10 @@ class HomeDevicesActivity : ComponentActivity() {
     private val tileStateViews = mutableMapOf<String, TextView>()
     private val tilePowerButtons = mutableMapOf<String, Button>()
     private val latestPowerState = mutableMapOf<String, Boolean>()
-    private var pendingPowerOff: String? = null
+    private var pendingPowerAction: Pair<String, Boolean>? = null
+    private var pinnedHomeKeys = mutableSetOf<String>()
+    private var lastRenderedHomeDevices: List<HomeDeviceInfo> = emptyList()
+    private var lastRenderedNote: String = ""
     // v3.1: complete device list of the last finished diagnostic,
     // handed to the main thread by postDiagOutput for save + render.
     private var pendingRenderDevices: List<HomeDeviceInfo>? = null
@@ -123,154 +133,8 @@ class HomeDevicesActivity : ComponentActivity() {
         setSendDiagEnabled(false)
         sendDiagBtn.setOnClickListener { sendDiagnostic() }
         try {
-            val registry = FactoryRegistry(
-
-                types = listOf(
-
-                    CastingVideoPlayerDevice,
-
-                    GoogleTVDevice,
-
-                    GoogleDisplayDevice,
-
-                    GoogleCameraDevice,
-
-                    GoogleDoorbellDevice,
-
-                    SpeakerDevice,
-
-                    OnOffLightDevice,
-
-                    OnOffPluginUnitDevice,
-
-                    OnOffLightSwitchDevice,
-
-                    OnOffSensorDevice,
-
-                    DimmableLightDevice,
-
-                    ExtendedColorLightDevice,
-
-                    ColorTemperatureLightDevice,
-
-                    ThermostatDevice,
-
-                    FanDevice,
-
-                    GenericSwitchDevice,
-
-                    ContactSensorDevice,
-
-                    OccupancySensorDevice,
-
-                    DoorLockDevice,
-
-                    LightSensorDevice,
-
-                    TemperatureSensorDevice,
-
-                    WindowCoveringDevice,
-
-                    RootNodeDevice,
-
-                    ChimeDevice,
-
-                    OtaRequestorDevice
-
-                ),
-
-                traits = listOf(
-
-                    OnOff,
-
-                    MediaPlayback,
-
-                    MediaInput,
-
-                    BasicInformation,
-
-                    AudioOutput,
-
-                    LevelControl,
-
-                    KeypadInput,
-
-                    ContentLauncher,
-
-                    Messages,
-
-                    WakeOnLan,
-
-                    Channel,
-
-                    TargetNavigator,
-
-                    LowPower,
-
-                    ApplicationLauncher,
-
-                    AccountLogin,
-
-                    FanControl,
-
-                    Thermostat,
-
-                    TemperatureMeasurement,
-
-                    TemperatureControl,
-
-                    WindowCovering,
-
-                    IlluminanceMeasurement,
-
-                    OccupancySensing,
-
-                    BooleanState,
-
-                    DoorLock,
-
-                    Volume,
-
-                    ExtendedMediaPlayback,
-
-                    ExtendedBasicInformation,
-
-                    ExtendedLevelControl,
-
-                    ExtendedMediaInput,
-
-                    ExtendedApplicationLauncher,
-
-                    MediaActivityState,
-
-                    Assistant,
-
-                    AssistantBroadcast,
-
-                    AssistantFulfillment,
-
-                    SearchableHome,
-
-                    VoiceStarter,
-
-                    Time
-
-                )
-
-            )
-
-            val config = HomeConfig(
-
-                coroutineContext = Dispatchers.IO,
-
-                factoryRegistry = registry,
-
-                homePlatformScope = HomeConfig.HomePlatformScope.HOME_PLATFORM_SCOPE_VERSION_1
-
-            )
-
-            homeClient = Home.getClient(applicationContext, homeConfig = config)
-
+            pinnedHomeKeys = savedPrefs().getStringSet("pinned_home_keys", emptySet())?.toMutableSet() ?: mutableSetOf()
+            homeClient = GoogleHomePowerManager.getClient(applicationContext)
             homeClient!!.registerActivityResultCallerForPermissions(this@HomeDevicesActivity)
         } catch (e: Exception) {
             homeInitError = e.message
@@ -468,9 +332,19 @@ class HomeDevicesActivity : ComponentActivity() {
         return kept + fresh
     }
 
-    // v3.1: one card per device, grouped by home, with a type icon
-    // and a Power off button when the device supports it.
+    private fun togglePinHome(info: HomeDeviceInfo) {
+        if (pinnedHomeKeys.contains(info.key)) {
+            pinnedHomeKeys.remove(info.key)
+        } else {
+            pinnedHomeKeys.add(info.key)
+        }
+        savedPrefs().edit().putStringSet("pinned_home_keys", pinnedHomeKeys.toSet()).apply()
+        renderDeviceTiles(lastRenderedHomeDevices, lastRenderedNote)
+    }
+
     private fun renderDeviceTiles(devices: List<HomeDeviceInfo>, note: String) {
+        lastRenderedHomeDevices = devices
+        lastRenderedNote = note
         devicesContainer.removeAllViews()
         tileStateViews.clear()
         tilePowerButtons.clear()
@@ -479,7 +353,22 @@ class HomeDevicesActivity : ComponentActivity() {
             devicesNote.text = "No devices found in your home yet."
             return
         }
-        val byHome = devices.groupBy { if (it.home.isEmpty()) "Home" else it.home }
+        val pinnedAll = devices.filter { pinnedHomeKeys.contains(it.key) }.sortedBy { it.name.lowercase() }
+        if (pinnedAll.isNotEmpty()) {
+            val favHeader = TextView(this).apply {
+                text = "★ Pinned Favorites - ${pinnedAll.size}"
+                setTextColor(Color.parseColor("#F59E0B"))
+                textSize = 13f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setPadding(0, dp(12), 0, dp(4))
+            }
+            devicesContainer.addView(favHeader)
+            for (info in pinnedAll) {
+                devicesContainer.addView(buildDeviceTile(info))
+            }
+        }
+        val unpinned = devices.filter { !pinnedHomeKeys.contains(it.key) }
+        val byHome = unpinned.groupBy { if (it.home.isEmpty()) "Home" else it.home }
         for ((home, list) in byHome) {
             val header = TextView(this).apply {
                 text = "$home - ${list.size} devices"
@@ -489,7 +378,7 @@ class HomeDevicesActivity : ComponentActivity() {
                 setPadding(0, dp(12), 0, dp(4))
             }
             devicesContainer.addView(header)
-            for (info in list) {
+            for (info in list.sortedBy { it.name.lowercase() }) {
                 devicesContainer.addView(buildDeviceTile(info))
             }
         }
@@ -530,6 +419,19 @@ class HomeDevicesActivity : ComponentActivity() {
         }
         nameCol.addView(typeView)
         topRow.addView(nameCol)
+        val isPinned = pinnedHomeKeys.contains(info.key)
+        val pinBtn = Button(this).apply {
+            text = if (isPinned) "★ Pinned" else "☆ Pin"
+            isAllCaps = false
+            textSize = 12f
+            setTextColor(if (isPinned) Color.parseColor("#F59E0B") else Color.parseColor("#9CA3AF"))
+            setBackgroundColor(Color.parseColor("#2A2A3A"))
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            minHeight = 0
+            minimumHeight = 0
+            setOnClickListener { togglePinHome(info) }
+        }
+        topRow.addView(pinBtn)
         card.addView(topRow)
         val stateView = TextView(this).apply {
             textSize = 13f
@@ -539,16 +441,34 @@ class HomeDevicesActivity : ComponentActivity() {
         tileStateViews[info.key] = stateView
         refreshTileState(info)
         if (info.supportsOff) {
-            val btn = Button(this).apply {
-                text = "Power off"
+            val btnRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(8)
+                }
+            }
+            val btnOn = Button(this).apply {
+                text = "Turn On"
                 isAllCaps = false
                 setTextColor(Color.WHITE)
-                setBackgroundColor(Color.parseColor("#2A2A3A"))
+                setBackgroundColor(Color.parseColor("#10B981"))
                 setPadding(dp(8), dp(8), dp(8), dp(8))
-                setOnClickListener { onPowerOffTapped(info, this, stateView) }
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(6) }
+                setOnClickListener { onPowerTapped(info, turnOn = true) }
             }
-            tilePowerButtons[info.key] = btn
-            card.addView(btn)
+            val btnOff = Button(this).apply {
+                text = "Turn Off"
+                isAllCaps = false
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.parseColor("#EF4444"))
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { onPowerTapped(info, turnOn = false) }
+            }
+            tilePowerButtons[info.key] = btnOff
+            btnRow.addView(btnOn)
+            btnRow.addView(btnOff)
+            card.addView(btnRow)
         } else if (info.types.any { it.contains("CastingVideoPlayer") || it.contains("GoogleTV") || it.contains("GoogleDisplay") }) {
             val noPower = TextView(this).apply {
                 text = "Power off not available for this device"
@@ -617,48 +537,41 @@ class HomeDevicesActivity : ComponentActivity() {
         return null
     }
 
-    // v3.1: Power off from the Control screen, through the Google
-    // Home API (no ADB host is known for Home devices).
-    private fun onPowerOffTapped(info: HomeDeviceInfo, btn: Button, stateView: TextView) {
+    private fun onPowerTapped(info: HomeDeviceInfo, turnOn: Boolean) {
         if (liveDevices.containsKey(info.key)) {
-            attemptPowerOff(info.key)
+            attemptPower(info.key, turnOn)
         } else {
-            // App restarted and only saved JSON exists: scan the home
-            // first, then power off the match.
             Toast.makeText(this, "Refreshing home devices first...", Toast.LENGTH_SHORT).show()
-            pendingPowerOff = info.key
+            pendingPowerAction = Pair(info.key, turnOn)
             runDiagnostic()
         }
     }
 
-    private fun attemptPowerOff(key: String) {
+    private fun attemptPower(key: String, turnOn: Boolean) {
+        val label = if (turnOn) "Turn On" else "Turn Off"
         val btn = tilePowerButtons[key]
         btn?.isEnabled = false
-        btn?.text = "Turning off..."
         lifecycleScope.launch(Dispatchers.IO) {
             val dev = liveDevices[key]
             val onOff = try { dev?.let { findOnOff(it) } } catch (e: Exception) { null }
             if (onOff == null) {
                 withContext(Dispatchers.Main) {
                     btn?.isEnabled = true
-                    btn?.text = "Power off"
                     Toast.makeText(this@HomeDevicesActivity, "Device no longer found in your home", Toast.LENGTH_LONG).show()
                 }
                 return@launch
             }
             try {
-                onOff.off()
+                if (turnOn) onOff.on() else onOff.off()
                 withContext(Dispatchers.Main) {
                     btn?.isEnabled = true
-                    btn?.text = "Power off"
-                    updateTilePowerState(key, false)
-                    Toast.makeText(this@HomeDevicesActivity, "Turned off", Toast.LENGTH_SHORT).show()
+                    updateTilePowerState(key, turnOn)
+                    Toast.makeText(this@HomeDevicesActivity, if (turnOn) "Turned on" else "Turned off", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     btn?.isEnabled = true
-                    btn?.text = "Power off"
-                    Toast.makeText(this@HomeDevicesActivity, "Power off failed: " + e.message, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@HomeDevicesActivity, "$label failed: " + e.message, Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -730,9 +643,9 @@ class HomeDevicesActivity : ComponentActivity() {
                     val note = if (partial) "Updated just now - ${merged.size} devices saved (some homes could not be refreshed)."
                         else "Updated just now - ${merged.size} devices saved for your home."
                     renderDeviceTiles(merged, note)
-                    val pending = pendingPowerOff
-                    pendingPowerOff = null
-                    if (pending != null) attemptPowerOff(pending)
+                    val pending = pendingPowerAction
+                    pendingPowerAction = null
+                    if (pending != null) attemptPower(pending.first, pending.second)
                 }
                 DiagLog.log(this@HomeDevicesActivity, "Diagnostic output shown OK in " + (System.currentTimeMillis() - t0) + " ms")
                 MainThreadWatchdog.mark("home output shown")
@@ -901,6 +814,7 @@ class HomeDevicesActivity : ComponentActivity() {
                 sb.appendLine("Note: only registered traits are shown.")
                 DiagLog.log(this@HomeDevicesActivity, "Diagnostic finished OK")
                 liveDevices = freshLive
+                GoogleHomePowerManager.cacheLiveDevices(freshLive.values)
                 // Hand whatever was collected to the UI thread; the
                 // render merges fresh homes over the saved list, so a
                 // partial scan still updates the homes it reached.
