@@ -1,3 +1,10 @@
+/**
+ * @file YouTubeLoungeService.swift
+ * @summary Implements the YouTube Lounge HTTP protocol to start and queue videos on Chromecast receivers.
+ * @description Acquires a lounge token from a TV screenId, binds a session (SID/gsessionid), and posts form-encoded playlist actions with automatic stale-SID retry.
+ * @testing Verified via static review and Python wire/encoding verification scripts against casttube's form-encoding and session counter rules.
+ */
+
 import Foundation
 
 /// Faithful Swift port of `casttube`'s YouTubeSession, the code the Android app
@@ -100,7 +107,7 @@ final class YouTubeLoungeService {
         let (data, _) = try await postForm(
             url: Self.loungeTokenURL,
             form: [("screen_ids", screenId)],
-            params: [:],
+            params: [],
             loungeHeader: false
         )
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -184,7 +191,7 @@ final class YouTubeLoungeService {
             request.setValue(token, forHTTPHeaderField: "X-YouTube-LoungeId-Token")
         }
         request.httpBody = form
-            .map { "\($0.0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.0)=\($0.1.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.1)" }
+            .map { "\(Self.formEncode($0.0))=\(Self.formEncode($0.1))" }
             .joined(separator: "&")
             .data(using: .utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -196,6 +203,16 @@ final class YouTubeLoungeService {
         }
         rid += 1
         return (data, http.statusCode)
+    }
+
+    private static let formAllowed: CharacterSet = {
+        var cs = CharacterSet.alphanumerics
+        cs.insert(charactersIn: "-._~")
+        return cs
+    }()
+
+    private static func formEncode(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? value
     }
 
     private func firstMatch(_ pattern: String, in text: String) -> String? {

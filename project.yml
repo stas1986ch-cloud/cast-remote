@@ -16,6 +16,8 @@ targets:
         NSLocalNetworkUsageDescription: "Cast Remote finds TVs and phones on your Wi-Fi to cast YouTube to them."
         NSBonjourServices:
           - _googlecast._tcp
+          - _233637DE._googlecast._tcp
+          - _androidtvremote2._tcp
           - _castremote._tcp
         LSApplicationQueriesSchemes:
           - youtube

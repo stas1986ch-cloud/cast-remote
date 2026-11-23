@@ -11,6 +11,8 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -49,3 +51,13 @@ jobs:
           name: CastRemote-ipa
           path: CastRemote.ipa
           retention-days: 30
+
+      - name: Publish Release IPA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest CastRemote.ipa --clobber
+          else
+            gh release create latest CastRemote.ipa --title "Cast Remote (Latest)" --notes "Latest unsigned CastRemote.ipa build for AltStore."
+          fi
