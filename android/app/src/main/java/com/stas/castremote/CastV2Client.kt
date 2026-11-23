@@ -215,7 +215,7 @@ object CastV2Client {
         }
     }
 
-    suspend fun wakeViaCast(host: String, port: Int = 8009) = withContext(Dispatchers.IO) {
+    suspend fun wakeViaCast(host: String, port: Int = 8009): Unit = withContext(Dispatchers.IO) {
         openSocket(host, port, 8000).use { sock ->
             val inp = DataInputStream(sock.inputStream)
             val out = DataOutputStream(sock.outputStream)
@@ -225,7 +225,7 @@ object CastV2Client {
         }
     }
 
-    suspend fun stopApp(host: String, port: Int = 8009) = withContext(Dispatchers.IO) {
+    suspend fun stopApp(host: String, port: Int = 8009): Unit = withContext(Dispatchers.IO) {
         openSocket(host, port, 6000).use { sock ->
             val inp = DataInputStream(sock.inputStream)
             val out = DataOutputStream(sock.outputStream)
