@@ -1,12 +1,16 @@
 /**
  * @file GoogleHomePowerBridge.kt
- * @summary Safe Kotlin-to-Java bridge for Google Home SDK OnOff.on()/off() with crash-proof permission handling and fallback latching.
- * @description Creates/binds HomeClient per-Activity in onCreate, serializes permission consent with an AtomicBoolean, catches all Throwables, and latches consent failure to prevent login kick-out loops.
- * @testing Compiled and lint-checked in Gradle signed assembleRelease (v2.3).
+ * @summary Crash-hardened Google Home SDK OnOff bridge matching cast-remote v3.2.1's full FactoryRegistry, Kotlin 2.4 runtime, and Activity lifecycle.
+ * @description Uses a single app-scoped HomeClient with CoroutineExceptionHandler, full 25-type/37-trait FactoryRegistry,lifecycle-safe consent, and persistent CrashCapture logging.
+ * @testing Compiled against Kotlin 2.4.0 stdlib + activity-ktx 1.9.3 + play-services-home 17.1.0 via signed assembleRelease (v2.4).
  */
 package com.project.autoswitch.ui.cast
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
 import com.google.home.ConsentScreenOptions
 import com.google.home.FactoryRegistry
 import com.google.home.ForcePermissionFlow
@@ -18,7 +22,7 @@ import com.google.home.PermissionsResultStatus
 import com.google.home.PermissionsState
 import com.google.home.google.*
 import com.google.home.matter.standard.*
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
@@ -26,9 +30,15 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import java.lang.ref.WeakReference
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.system.exitProcess
 
 object GoogleHomePowerBridge {
 
@@ -36,30 +46,48 @@ object GoogleHomePowerBridge {
         fun onResult(success: Boolean, message: String)
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private const val CRASH_FILE = "last_crash.txt"
+    private const val DIAG_FILE = "cast_diag.txt"
+
     private val consentInFlight = AtomicBoolean(false)
     private val devicesByLowerName = ConcurrentHashMap<String, HomeDevice>()
 
-    @Volatile private var boundClient: HomeClient? = null
-    @Volatile private var boundActivityRef: WeakReference<ComponentActivity>? = null
+    @Volatile private var sharedClient: HomeClient? = null
     @Volatile private var lastSyncMs = 0L
     @Volatile private var homeConsentFailedReason: String? = null
 
+    private val homeCoroutineHandler = CoroutineExceptionHandler { _, throwable ->
+        homeConsentFailedReason = "Home SDK background error: ${throwable.message ?: throwable.javaClass.simpleName}"
+    }
+
+    // Exact 25-type, 37-trait registry proven working in cast-remote v3.2.1.
     private fun buildRegistry(): FactoryRegistry = FactoryRegistry(
         types = listOf(
             CastingVideoPlayerDevice,
             GoogleTVDevice,
             GoogleDisplayDevice,
+            GoogleCameraDevice,
+            GoogleDoorbellDevice,
             SpeakerDevice,
             OnOffLightDevice,
             OnOffPluginUnitDevice,
             OnOffLightSwitchDevice,
+            OnOffSensorDevice,
             DimmableLightDevice,
             ExtendedColorLightDevice,
             ColorTemperatureLightDevice,
+            ThermostatDevice,
             FanDevice,
             GenericSwitchDevice,
-            RootNodeDevice
+            ContactSensorDevice,
+            OccupancySensorDevice,
+            DoorLockDevice,
+            LightSensorDevice,
+            TemperatureSensorDevice,
+            WindowCoveringDevice,
+            RootNodeDevice,
+            ChimeDevice,
+            OtaRequestorDevice
         ),
         traits = listOf(
             OnOff,
@@ -69,39 +97,134 @@ object GoogleHomePowerBridge {
             AudioOutput,
             LevelControl,
             KeypadInput,
+            ContentLauncher,
+            Messages,
             WakeOnLan,
+            Channel,
+            TargetNavigator,
             LowPower,
             ApplicationLauncher,
-            Volume
+            AccountLogin,
+            FanControl,
+            Thermostat,
+            TemperatureMeasurement,
+            TemperatureControl,
+            WindowCovering,
+            IlluminanceMeasurement,
+            OccupancySensing,
+            BooleanState,
+            DoorLock,
+            Volume,
+            ExtendedMediaPlayback,
+            ExtendedBasicInformation,
+            ExtendedLevelControl,
+            ExtendedMediaInput,
+            ExtendedApplicationLauncher,
+            MediaActivityState,
+            Assistant,
+            AssistantBroadcast,
+            AssistantFulfillment,
+            SearchableHome,
+            VoiceStarter,
+            Time
         )
     )
 
     @JvmStatic
-    @Synchronized
-    fun registerActivity(activity: ComponentActivity) {
+    fun installCrashCapture(context: Context) {
+        val prev = Thread.getDefaultUncaughtExceptionHandler()
+        if (prev is SafeCrashHandler) return
+        Thread.setDefaultUncaughtExceptionHandler(SafeCrashHandler(context.applicationContext, prev))
+    }
+
+    private class SafeCrashHandler(
+        private val appContext: Context,
+        private val previous: Thread.UncaughtExceptionHandler?
+    ) : Thread.UncaughtExceptionHandler {
+        override fun uncaughtException(t: Thread, e: Throwable) {
+            try {
+                val sw = StringWriter()
+                e.printStackTrace(PrintWriter(sw))
+                val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                val text = "Last crash: $stamp\nThread: ${t.name}\n${e.javaClass.name}: ${e.message}\n$sw"
+                File(appContext.filesDir, CRASH_FILE).writeText(text)
+            } catch (_: Throwable) {
+            }
+            if (previous != null) {
+                previous.uncaughtException(t, e)
+            } else {
+                android.os.Process.killProcess(android.os.Process.myPid())
+                exitProcess(10)
+            }
+        }
+    }
+
+    @JvmStatic
+    fun logDiag(context: Context, msg: String) {
         try {
-            val config = HomeConfig(
-                coroutineContext = Dispatchers.IO,
-                factoryRegistry = buildRegistry(),
-                homePlatformScope = HomeConfig.HomePlatformScope.HOME_PLATFORM_SCOPE_VERSION_1
-            )
-            val hc = Home.getClient(activity.applicationContext, homeConfig = config)
-            hc.registerActivityResultCallerForPermissions(activity)
-            boundClient = hc
-            boundActivityRef = WeakReference(activity)
-        } catch (t: Throwable) {
-            boundClient = null
-            homeConsentFailedReason = "Google Home init unavailable: ${t.message ?: t.javaClass.simpleName}"
+            val stamp = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+            val f = File(context.filesDir, DIAG_FILE)
+            val prev = if (f.exists()) f.readText() else ""
+            val next = (prev + "[$stamp] $msg\n").takeLast(32768)
+            f.writeText(next)
+        } catch (_: Throwable) {
+        }
+    }
+
+    @JvmStatic
+    fun readDiagnosticReport(context: Context): String {
+        val diag = try {
+            val f = File(context.filesDir, DIAG_FILE)
+            if (f.exists()) f.readText() else "No diagnostic entries yet."
+        } catch (_: Throwable) { "Could not read diag log." }
+        val crash = try {
+            val f = File(context.filesDir, CRASH_FILE)
+            if (f.exists()) f.readText() else "No crash recorded."
+        } catch (_: Throwable) { "Could not read crash log." }
+        return "=== Diagnostic Log ===\n$diag\n\n=== Last Crash ===\n$crash"
+    }
+
+    @JvmStatic
+    fun copyToClipboard(context: Context, label: String, text: String) {
+        try {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText(label, text))
+        } catch (_: Throwable) {
+        }
+    }
+
+    @Synchronized
+    private fun getOrCreateClient(context: Context): HomeClient {
+        sharedClient?.let { return it }
+        val config = HomeConfig(
+            coroutineContext = SupervisorJob() + Dispatchers.IO + homeCoroutineHandler,
+            factoryRegistry = buildRegistry(),
+            homePlatformScope = HomeConfig.HomePlatformScope.HOME_PLATFORM_SCOPE_VERSION_1
+        )
+        return Home.getClient(context.applicationContext, homeConfig = config).also {
+            sharedClient = it
         }
     }
 
     @JvmStatic
     @Synchronized
-    fun unregisterActivity(activity: ComponentActivity) {
-        if (boundActivityRef?.get() === activity) {
-            boundActivityRef = null
-            boundClient = null
+    fun registerActivity(activity: ComponentActivity) {
+        installCrashCapture(activity)
+        try {
+            val hc = getOrCreateClient(activity)
+            hc.registerActivityResultCallerForPermissions(activity)
+            logDiag(activity, "HomeClient registered for CastRemoteActivity")
+        } catch (t: Throwable) {
+            val msg = "HomeClient register failed: ${t.javaClass.simpleName}: ${t.message}"
+            logDiag(activity, msg)
+            homeConsentFailedReason = msg
         }
+    }
+
+    @JvmStatic
+    fun unregisterActivity(activity: ComponentActivity) {
+        // Keep sharedClient alive across config/consent transitions just like cast-remote v3.2.1;
+        // do not null it out while an OAuth ActivityResult may still be returning.
     }
 
     private suspend fun findOnOff(device: HomeDevice): OnOff? {
@@ -110,6 +233,9 @@ object GoogleHomePowerBridge {
             { withTimeout(3_000) { device.typeOrNull(GoogleTVDevice).firstOrNull() }?.standardTraits?.onOff },
             { withTimeout(3_000) { device.typeOrNull(GoogleDisplayDevice).firstOrNull() }?.standardTraits?.onOff },
             { withTimeout(3_000) { device.typeOrNull(OnOffLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(3_000) { device.typeOrNull(DimmableLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(3_000) { device.typeOrNull(ExtendedColorLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(3_000) { device.typeOrNull(ColorTemperatureLightDevice).firstOrNull() }?.standardTraits?.onOff },
             { withTimeout(3_000) { device.typeOrNull(OnOffPluginUnitDevice).firstOrNull() }?.standardTraits?.onOff },
             { withTimeout(3_000) { device.typeOrNull(FanDevice).firstOrNull() }?.standardTraits?.onOff }
         )
@@ -125,23 +251,27 @@ object GoogleHomePowerBridge {
 
     private suspend fun ensureSynced(activity: ComponentActivity, forceRefresh: Boolean): String? {
         homeConsentFailedReason?.let { return it }
-        val hc = boundClient ?: return "Google Home client not ready"
-        if (boundActivityRef?.get() !== activity || activity.isFinishing || activity.isDestroyed) {
-            return "Activity no longer active"
+        if (activity.isFinishing || activity.isDestroyed) return "Screen closed"
+        val hc = try {
+            getOrCreateClient(activity)
+        } catch (t: Throwable) {
+            val r = "Home SDK init error: ${t.message}"
+            logDiag(activity, r)
+            homeConsentFailedReason = r
+            return r
         }
 
-        val permState = withTimeout(10_000) {
+        val permState = withTimeout(12_000) {
             hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
         }
+        logDiag(activity, "Home permission state: $permState")
+
         if (permState != PermissionsState.GRANTED) {
             if (!consentInFlight.compareAndSet(false, true)) {
-                return "Google Home sign-in already in progress"
+                return "Google Home sign-in already open"
             }
             try {
                 val res = withContext(Dispatchers.Main) {
-                    if (activity.isFinishing || activity.isDestroyed) {
-                        throw IllegalStateException("Activity closed")
-                    }
                     hc.requestPermissions(
                         ForcePermissionFlow.FORCE_LAUNCH,
                         consentScreenOptions = ConsentScreenOptions(
@@ -151,13 +281,15 @@ object GoogleHomePowerBridge {
                         )
                     )
                 }
+                logDiag(activity, "Consent result: ${res.status} ${res.errorMessage ?: ""}")
                 if (res.status != PermissionsResultStatus.SUCCESS) {
-                    val reason = "Google Home login not authorized (${res.status})"
+                    val reason = "Google Home not authorized for this package (${res.status} ${res.errorMessage ?: ""})".trim()
                     homeConsentFailedReason = reason
                     return reason
                 }
             } catch (t: Throwable) {
-                val reason = "Google Home login unavailable (${t.message ?: t.javaClass.simpleName})"
+                val reason = "Google Home login error (${t.javaClass.simpleName}: ${t.message})"
+                logDiag(activity, reason)
                 homeConsentFailedReason = reason
                 return reason
             } finally {
@@ -167,14 +299,16 @@ object GoogleHomePowerBridge {
 
         val stale = (System.currentTimeMillis() - lastSyncMs) > 5 * 60 * 1000L
         if (forceRefresh || devicesByLowerName.isEmpty() || stale) {
-            val structures = withTimeout(10_000) { hc.structures().first() }
+            val structures = withTimeout(12_000) { hc.structures().first() }
+            logDiag(activity, "Home structures found: ${structures.size}")
             for (s in structures) {
                 try {
-                    val devs = withTimeout(10_000) { s.devices().first() }
+                    val devs = withTimeout(12_000) { s.devices().first() }
                     for (d in devs) {
                         devicesByLowerName[d.name.trim().lowercase()] = d
                     }
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    logDiag(activity, "Structure '${s.name}' scan error: ${t.message}")
                 }
             }
             if (devicesByLowerName.isNotEmpty()) lastSyncMs = System.currentTimeMillis()
@@ -192,7 +326,7 @@ object GoogleHomePowerBridge {
 
     @JvmStatic
     fun setPower(activity: ComponentActivity, deviceName: String, turnOn: Boolean, callback: PowerCallback) {
-        scope.launch {
+        activity.lifecycleScope.launch(Dispatchers.IO + homeCoroutineHandler) {
             try {
                 val permErr = ensureSynced(activity, forceRefresh = false)
                 if (permErr != null) {
@@ -214,9 +348,12 @@ object GoogleHomePowerBridge {
                     return@launch
                 }
                 if (turnOn) onOff.on() else onOff.off()
+                logDiag(activity, "Sent ${if (turnOn) "ON" else "OFF"} to '${dev.name}'")
                 callback.onResult(true, dev.name)
             } catch (t: Throwable) {
-                callback.onResult(false, t.message ?: t.javaClass.simpleName)
+                val err = "${t.javaClass.simpleName}: ${t.message}"
+                logDiag(activity, "setPower error: $err")
+                callback.onResult(false, err)
             }
         }
     }

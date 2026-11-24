@@ -327,7 +327,12 @@ public class CastRemoteActivity extends AppCompatActivity {
         title.setTextSize(20f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setPadding(dp(14), 0, 0, 0);
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         topBar.addView(title);
+
+        Button btnLog = makeHeaderPill("Log", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_MUTED, Color.TRANSPARENT);
+        btnLog.setOnClickListener(v -> showDiagDialog());
+        topBar.addView(btnLog);
         root.addView(topBar);
 
         statusView = new TextView(this);
@@ -884,6 +889,26 @@ public class CastRemoteActivity extends AppCompatActivity {
                 setStatus("Pair " + dev.name + " failed: " + e.getMessage());
             }
         });
+    }
+
+    private void showDiagDialog() {
+        String report = GoogleHomePowerBridge.readDiagnosticReport(this);
+        ScrollView sv = new ScrollView(this);
+        TextView tv = new TextView(this);
+        tv.setText(report.length() > 8000 ? report.substring(report.length() - 8000) : report);
+        tv.setTextSize(11f);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(dp(16), dp(16), dp(16), dp(16));
+        sv.addView(tv);
+        new AlertDialog.Builder(this)
+                .setTitle("Diagnostic & Crash Log")
+                .setView(sv)
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Copy Log", (d, w) -> {
+                    GoogleHomePowerBridge.copyToClipboard(this, "Cast Utilities Log", report);
+                    Toast.makeText(this, "Log copied", Toast.LENGTH_SHORT).show();
+                })
+                .show();
     }
 
     private void showPinDialog(DeviceItem dev) {

@@ -40,14 +40,17 @@
 
         <activity
             android:name="com.project.autoswitch.ui.MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="false" />
 
         <activity
             android:name="com.project.autoswitch.ui.HdmiSettingsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="false" />
 
         <activity
             android:name="com.project.autoswitch.ui.cast.CastRemoteActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
