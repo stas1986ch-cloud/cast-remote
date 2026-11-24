@@ -1,8 +1,8 @@
 /**
  * @file CastRemoteActivity.java
- * @summary Phone and Google TV (D-pad focusable) Cast Remote screen with favorite pinning, Cast/Mirror, Receiver, and TV Power On/Off.
- * @description Uses NsdManager with a WifiManager MulticastLock to discover Chromecasts and peer devices, delegates protocol calls to CastAndTvEngine, and persists pinned favorites in SharedPreferences.
- * @testing Compiled via Gradle Java 11 / Android SDK 35 and verified for D-pad focus rings, pinned-first sorting, and safe background socket handling.
+ * @summary Redesigned Phone & Google TV Cast Remote screen with uniform gradient buttons, 2-per-line control squares, and Power On/Off toggle.
+ * @description Renders a consistent dark-neon gradient UI where every menu and device control shares the same rounded shape in 2-column rows, backed by GoogleHomePowerBridge, CastAndTvEngine, and SharedPreferences pinning.
+ * @testing Compiled and lint-checked via Gradle signed assembleRelease (v2.1) with D-pad focus states and touch targets verified.
  */
 package com.project.autoswitch.ui.cast;
 
@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
@@ -56,17 +57,25 @@ public class CastRemoteActivity extends AppCompatActivity {
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
 
+    // Unified dark-neon palette
     private static final int COL_BG = Color.parseColor("#0A0E17");
     private static final int COL_CARD = Color.parseColor("#141B2D");
-    private static final int COL_CYAN = Color.parseColor("#00FFFF");
+    private static final int COL_CYAN = Color.parseColor("#06B6D4");
+    private static final int COL_NEON_CYAN = Color.parseColor("#00FFFF");
     private static final int COL_VIOLET = Color.parseColor("#7C3AED");
     private static final int COL_MAGENTA = Color.parseColor("#EC4899");
     private static final int COL_AMBER = Color.parseColor("#F59E0B");
     private static final int COL_EMERALD = Color.parseColor("#10B981");
     private static final int COL_CRIMSON = Color.parseColor("#EF4444");
-    private static final int COL_DARK_BTN = Color.parseColor("#232C42");
+    private static final int COL_SLATE_TOP = Color.parseColor("#2A3550");
+    private static final int COL_SLATE_BOT = Color.parseColor("#1C2438");
     private static final int COL_TEXT = Color.parseColor("#E5E7EB");
     private static final int COL_MUTED = Color.parseColor("#9CA3AF");
+
+    // Uniform button geometry (all controls share identical shape & radius)
+    private static final int BTN_RADIUS_DP = 12;
+    private static final int CONTROL_SQUARE_HEIGHT_DP = 56;
+    private static final int HEADER_PILL_HEIGHT_DP = 36;
 
     private static final class DeviceItem {
         final String id;
@@ -78,7 +87,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         final boolean isPhone;
         final String host;
         final int port;
-        Boolean isPowerOn;
+        boolean powerOn;
 
         DeviceItem(String id, String name, String state, String title, boolean isPhone, String host, int port) {
             this.id = id;
@@ -88,6 +97,8 @@ public class CastRemoteActivity extends AppCompatActivity {
             this.isPhone = isPhone;
             this.host = host;
             this.port = port;
+            // Default to ON when discovered on network so first tap turns TV OFF cleanly.
+            this.powerOn = true;
         }
     }
 
@@ -109,7 +120,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private TextView statusView;
     private EditText linkInput;
-    private Button btnReceive;
+    private Button btnReceiveToggle;
     private LinearLayout devicesContainer;
 
     @Override
@@ -138,15 +149,19 @@ public class CastRemoteActivity extends AppCompatActivity {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
-    private StateListDrawable focusableBg(int fillColor, int radiusDp) {
-        GradientDrawable focused = new GradientDrawable();
-        focused.setColor(fillColor);
-        focused.setCornerRadius(dp(radiusDp));
-        focused.setStroke(dp(2), COL_CYAN);
+    /**
+     * Unified gradient button background with identical rounded shape and neon D-pad focus border.
+     */
+    private StateListDrawable gradientButtonBg(int[] colors, int strokeColorNormal) {
+        GradientDrawable focused = new GradientDrawable(GradientDrawable.Orientation.TL_BR, colors);
+        focused.setCornerRadius(dp(BTN_RADIUS_DP));
+        focused.setStroke(dp(2), COL_NEON_CYAN);
 
-        GradientDrawable normal = new GradientDrawable();
-        normal.setColor(fillColor);
-        normal.setCornerRadius(dp(radiusDp));
+        GradientDrawable normal = new GradientDrawable(GradientDrawable.Orientation.TL_BR, colors);
+        normal.setCornerRadius(dp(BTN_RADIUS_DP));
+        if (strokeColorNormal != Color.TRANSPARENT) {
+            normal.setStroke(dp(1), strokeColorNormal);
+        }
 
         StateListDrawable sld = new StateListDrawable();
         sld.addState(new int[]{android.R.attr.state_focused}, focused);
@@ -155,17 +170,67 @@ public class CastRemoteActivity extends AppCompatActivity {
         return sld;
     }
 
-    private Button makeButton(String label, int fillColor, int textColor) {
+    /**
+     * Creates a uniform control square button (identical height, shape, typography, and gradient style).
+     */
+    private Button makeControlSquare(String label, int[] gradientColors, int textColor, int strokeNormal) {
         Button b = new Button(this);
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(textColor);
         b.setTextSize(14f);
-        b.setBackground(focusableBg(fillColor, 10));
-        b.setPadding(dp(12), dp(10), dp(12), dp(10));
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(gradientButtonBg(gradientColors, strokeNormal));
+        b.setPadding(dp(10), dp(8), dp(10), dp(8));
+        b.setMinHeight(dp(CONTROL_SQUARE_HEIGHT_DP));
+        b.setMinimumHeight(dp(CONTROL_SQUARE_HEIGHT_DP));
         b.setFocusable(true);
         b.setClickable(true);
         return b;
+    }
+
+    /**
+     * Creates a compact header pill button (same rounded gradient shape, smaller height for Pin/Pair/Back).
+     */
+    private Button makeHeaderPill(String label, int[] gradientColors, int textColor, int strokeNormal) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setAllCaps(false);
+        b.setTextColor(textColor);
+        b.setTextSize(12f);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(gradientButtonBg(gradientColors, strokeNormal));
+        b.setPadding(dp(12), dp(4), dp(12), dp(4));
+        b.setMinHeight(dp(HEADER_PILL_HEIGHT_DP));
+        b.setMinimumHeight(dp(HEADER_PILL_HEIGHT_DP));
+        b.setFocusable(true);
+        b.setClickable(true);
+        return b;
+    }
+
+    /**
+     * Places exactly 2 identical control squares side-by-side in a single row.
+     */
+    private LinearLayout makeTwoUpRow(Button left, Button right, int topMarginDp) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        rowLp.topMargin = dp(topMarginDp);
+        row.setLayoutParams(rowLp);
+
+        LinearLayout.LayoutParams leftLp = new LinearLayout.LayoutParams(0, dp(CONTROL_SQUARE_HEIGHT_DP), 1f);
+        leftLp.rightMargin = dp(8);
+        left.setLayoutParams(leftLp);
+        row.addView(left);
+
+        LinearLayout.LayoutParams rightLp = new LinearLayout.LayoutParams(0, dp(CONTROL_SQUARE_HEIGHT_DP), 1f);
+        right.setLayoutParams(rightLp);
+        row.addView(right);
+
+        return row;
     }
 
     private ScrollView buildUi() {
@@ -174,81 +239,67 @@ public class CastRemoteActivity extends AppCompatActivity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(20), dp(20), dp(32));
+        root.setPadding(dp(18), dp(18), dp(18), dp(32));
         scroll.addView(root);
 
+        // Header bar
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
 
-        Button btnBack = makeButton("← Hub", COL_DARK_BTN, COL_TEXT);
+        Button btnBack = makeHeaderPill("← Hub", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, Color.TRANSPARENT);
         btnBack.setOnClickListener(v -> finish());
         topBar.addView(btnBack);
 
         TextView title = new TextView(this);
-        title.setText("CAST REMOTE & TV POWER");
-        title.setTextColor(COL_CYAN);
+        title.setText("CAST REMOTE");
+        title.setTextColor(COL_NEON_CYAN);
         title.setTextSize(20f);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setPadding(dp(14), 0, 0, 0);
         topBar.addView(title);
         root.addView(topBar);
 
-        Button btnMirrorAll = makeButton("Mirror What's Playing", COL_VIOLET, Color.WHITE);
-        LinearLayout.LayoutParams fullLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        fullLp.topMargin = dp(14);
-        btnMirrorAll.setLayoutParams(fullLp);
-        btnMirrorAll.setOnClickListener(v -> mirrorTargets(null));
-        root.addView(btnMirrorAll);
-
         statusView = new TextView(this);
         statusView.setText("Discovering TVs & phones...");
         statusView.setTextColor(COL_MUTED);
-        statusView.setTextSize(14f);
-        statusView.setPadding(0, dp(10), 0, dp(8));
+        statusView.setTextSize(13f);
+        statusView.setPadding(0, dp(10), 0, dp(10));
         root.addView(statusView);
 
+        // YouTube link input (same rounded corner radius)
         linkInput = new EditText(this);
         linkInput.setHint("Paste a YouTube link (optional)");
         linkInput.setHintTextColor(COL_MUTED);
         linkInput.setTextColor(COL_TEXT);
         linkInput.setSingleLine(true);
-        linkInput.setBackground(focusableBg(COL_CARD, 8));
-        linkInput.setPadding(dp(12), dp(12), dp(12), dp(12));
+        linkInput.setBackground(gradientButtonBg(new int[]{COL_CARD, COL_CARD}, COL_SLATE_TOP));
+        linkInput.setPadding(dp(14), dp(12), dp(14), dp(12));
         linkInput.setFocusable(true);
         root.addView(linkInput);
 
-        LinearLayout actionRow = new LinearLayout(this);
-        actionRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        rowLp.topMargin = dp(10);
-        actionRow.setLayoutParams(rowLp);
+        // Top Menu: 2-per-line uniform gradient control squares
+        Button btnMirrorAll = makeControlSquare("Mirror Playing", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
+        btnMirrorAll.setOnClickListener(v -> mirrorTargets(null));
 
-        Button btnRefresh = makeButton("Refresh", COL_CYAN, COL_BG);
-        LinearLayout.LayoutParams halfLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        halfLp.rightMargin = dp(8);
-        btnRefresh.setLayoutParams(halfLp);
+        Button btnRefresh = makeControlSquare("Refresh", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
         btnRefresh.setOnClickListener(v -> refreshDevices());
-        actionRow.addView(btnRefresh);
+        root.addView(makeTwoUpRow(btnMirrorAll, btnRefresh, 12));
 
-        Button btnStopAll = makeButton("Stop All", COL_MAGENTA, Color.WHITE);
-        btnStopAll.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Button btnStopAll = makeControlSquare("Stop All", new int[]{COL_MAGENTA, COL_AMBER}, Color.WHITE, Color.TRANSPARENT);
         btnStopAll.setOnClickListener(v -> stopAllDevices());
-        actionRow.addView(btnStopAll);
-        root.addView(actionRow);
 
-        btnReceive = makeButton("Receive Casts on This Device", COL_DARK_BTN, COL_TEXT);
-        LinearLayout.LayoutParams recLp = new LinearLayout.LayoutParams(
+        btnReceiveToggle = makeControlSquare("Receive: OFF", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+        btnReceiveToggle.setOnClickListener(v -> toggleReceiving());
+        root.addView(makeTwoUpRow(btnStopAll, btnReceiveToggle, 8));
+
+        // Spacer before device list
+        LinearLayout.LayoutParams listLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        recLp.topMargin = dp(10);
-        recLp.bottomMargin = dp(14);
-        btnReceive.setLayoutParams(recLp);
-        btnReceive.setOnClickListener(v -> toggleReceiving());
-        root.addView(btnReceive);
-
+        listLp.topMargin = dp(16);
         devicesContainer = new LinearLayout(this);
         devicesContainer.setOrientation(LinearLayout.VERTICAL);
+        devicesContainer.setLayoutParams(listLp);
         root.addView(devicesContainer);
 
         return scroll;
@@ -280,7 +331,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     existing != null ? existing.state : "IDLE",
                     existing != null ? existing.title : "",
                     false, host, port);
-            if (existing != null) item.isPowerOn = existing.isPowerOn;
+            if (existing != null) item.powerOn = existing.powerOn;
             castDevices.put(uid, item);
             mainHandler.post(this::renderDevices);
         });
@@ -375,7 +426,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         return val != null ? new String(val, StandardCharsets.UTF_8) : null;
     }
 
-    // MARK: - Pinning & Rendering
+    // MARK: - Pinning & Uniform 2-per-Line Card Rendering
 
     private void togglePin(DeviceItem dev) {
         if (pinnedIds.contains(dev.id)) {
@@ -413,10 +464,11 @@ public class CastRemoteActivity extends AppCompatActivity {
 
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
-            GradientDrawable cardBg = new GradientDrawable();
-            cardBg.setColor(COL_CARD);
-            cardBg.setCornerRadius(dp(12));
-            if (isPinned) cardBg.setStroke(dp(2), COL_AMBER);
+            GradientDrawable cardBg = new GradientDrawable(
+                    GradientDrawable.Orientation.TOP_BOTTOM,
+                    new int[]{COL_CARD, Color.parseColor("#101626")});
+            cardBg.setCornerRadius(dp(14));
+            cardBg.setStroke(dp(isPinned ? 2 : 1), isPinned ? COL_AMBER : COL_SLATE_TOP);
             card.setBackground(cardBg);
             card.setPadding(dp(14), dp(14), dp(14), dp(14));
             LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
@@ -424,87 +476,72 @@ public class CastRemoteActivity extends AppCompatActivity {
             cardLp.bottomMargin = dp(12);
             card.setLayoutParams(cardLp);
 
+            // Card Header: Device Name/Status + compact Pin (& Pair for TVs) pills
             LinearLayout header = new LinearLayout(this);
             header.setOrientation(LinearLayout.HORIZONTAL);
             header.setGravity(Gravity.CENTER_VERTICAL);
 
             TextView label = new TextView(this);
-            String titleSuffix = (dev.title != null && !dev.title.isEmpty()) ? " - " + dev.title : "";
-            label.setText(dev.name + " - " + dev.state + titleSuffix);
-            label.setTextColor("PLAYING".equals(dev.state) ? COL_CYAN : (dev.isPhone ? COL_MAGENTA : COL_TEXT));
+            String titleSuffix = (dev.title != null && !dev.title.isEmpty()) ? " · " + dev.title : "";
+            label.setText(dev.name + " · " + dev.state + titleSuffix);
+            label.setTextColor("PLAYING".equals(dev.state) ? COL_NEON_CYAN : (dev.isPhone ? COL_MAGENTA : COL_TEXT));
             label.setTextSize(15f);
+            label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
             header.addView(label);
 
-            Button btnPin = makeButton(isPinned ? "★ Pinned" : "☆ Pin", COL_DARK_BTN, isPinned ? COL_AMBER : COL_MUTED);
-            btnPin.setTextSize(12f);
-            btnPin.setPadding(dp(10), dp(4), dp(10), dp(4));
+            if (!dev.isPhone) {
+                Button btnPair = makeHeaderPill(
+                        isPaired ? "Paired ✓" : "Pair",
+                        isPaired ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                        Color.WHITE,
+                        Color.TRANSPARENT);
+                LinearLayout.LayoutParams pairLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, dp(HEADER_PILL_HEIGHT_DP));
+                pairLp.rightMargin = dp(6);
+                btnPair.setLayoutParams(pairLp);
+                btnPair.setOnClickListener(v -> pairTv(dev));
+                header.addView(btnPair);
+            }
+
+            Button btnPin = makeHeaderPill(
+                    isPinned ? "★ Pinned" : "☆ Pin",
+                    isPinned ? new int[]{COL_AMBER, COL_MAGENTA} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                    isPinned ? Color.WHITE : COL_MUTED,
+                    Color.TRANSPARENT);
+            btnPin.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(HEADER_PILL_HEIGHT_DP)));
             btnPin.setOnClickListener(v -> togglePin(dev));
             header.addView(btnPin);
             card.addView(header);
 
-            LinearLayout castRow = new LinearLayout(this);
-            castRow.setOrientation(LinearLayout.HORIZONTAL);
-            LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            rowLp.topMargin = dp(10);
-            castRow.setLayoutParams(rowLp);
-
-            Button btnPlay = makeButton("Play Here", COL_VIOLET, Color.WHITE);
-            LinearLayout.LayoutParams btnLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            btnLp.rightMargin = dp(6);
-            btnPlay.setLayoutParams(btnLp);
+            // Row 1 (2 uniform gradient squares): Play Here | Mirror Here
+            Button btnPlay = makeControlSquare("Play Here", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
             btnPlay.setOnClickListener(v -> playOnDevice(dev));
-            castRow.addView(btnPlay);
 
-            Button btnMirror = makeButton("Mirror Here", COL_MAGENTA, Color.WHITE);
-            LinearLayout.LayoutParams btnLp2 = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-            btnLp2.rightMargin = dev.isPhone ? 0 : dp(6);
-            btnMirror.setLayoutParams(btnLp2);
+            Button btnMirror = makeControlSquare("Mirror Here", new int[]{COL_MAGENTA, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
             btnMirror.setOnClickListener(v -> mirrorTargets(dev));
-            castRow.addView(btnMirror);
+            card.addView(makeTwoUpRow(btnPlay, btnMirror, 12));
 
+            // Row 2 for TVs (2 uniform gradient squares): Power Toggle (ON/OFF) | Stop
             if (!dev.isPhone) {
-                Button btnStop = makeButton("Stop", COL_DARK_BTN, Color.WHITE);
-                btnStop.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.8f));
+                String powerLabel = dev.powerOn ? "Power: ON" : "Power: OFF";
+                int[] powerColors = dev.powerOn
+                        ? new int[]{COL_EMERALD, COL_CYAN}
+                        : new int[]{COL_CRIMSON, COL_MAGENTA};
+                Button btnPowerToggle = makeControlSquare(powerLabel, powerColors, Color.WHITE, Color.TRANSPARENT);
+                btnPowerToggle.setOnClickListener(v -> togglePowerDevice(dev));
+
+                Button btnStop = makeControlSquare("Stop Cast", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
                 btnStop.setOnClickListener(v -> stopDevice(dev));
-                castRow.addView(btnStop);
-            }
-            card.addView(castRow);
-
-            if (!dev.isPhone) {
-                LinearLayout powerRow = new LinearLayout(this);
-                powerRow.setOrientation(LinearLayout.HORIZONTAL);
-                LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                pLp.topMargin = dp(8);
-                powerRow.setLayoutParams(pLp);
-
-                Button btnOn = makeButton("Turn On", COL_EMERALD, Color.WHITE);
-                LinearLayout.LayoutParams onLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-                onLp.rightMargin = dp(6);
-                btnOn.setLayoutParams(onLp);
-                btnOn.setOnClickListener(v -> powerOnDevice(dev));
-                powerRow.addView(btnOn);
-
-                Button btnOff = makeButton("Turn Off", COL_CRIMSON, Color.WHITE);
-                LinearLayout.LayoutParams offLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-                offLp.rightMargin = dp(6);
-                btnOff.setLayoutParams(offLp);
-                btnOff.setOnClickListener(v -> powerOffDevice(dev));
-                powerRow.addView(btnOff);
-
-                Button btnPair = makeButton(isPaired ? "Paired ✓" : "Pair TV", COL_DARK_BTN, isPaired ? COL_EMERALD : COL_TEXT);
-                btnPair.setOnClickListener(v -> pairTv(dev));
-                powerRow.addView(btnPair);
-                card.addView(powerRow);
+                card.addView(makeTwoUpRow(btnPowerToggle, btnStop, 8));
             }
 
             devicesContainer.addView(card);
         }
     }
 
-    // MARK: - Cast / Mirror / Stop / Power Actions
+    // MARK: - Cast / Mirror / Stop / Power Toggle Actions
 
     private void playOnDevice(DeviceItem dev) {
         CastWire.ParsedLink parsed = CastWire.parseYouTubeLink(linkInput.getText().toString());
@@ -522,6 +559,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     engine.playYouTubeOnScreen(screenId, parsed.videoId, parsed.startSeconds);
                     dev.state = "PLAYING";
                     dev.contentId = parsed.videoId;
+                    dev.powerOn = true;
                 }
                 setStatus("Playing on " + dev.name + ".");
                 mainHandler.post(this::renderDevices);
@@ -575,6 +613,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                             String screenId = engine.launchYouTubeAndGetScreenId(t.host, t.port);
                             engine.playYouTubeOnScreen(screenId, source.contentId, startSec);
                             t.state = "PLAYING";
+                            t.powerOn = true;
                         }
                         okCount++;
                     } catch (Exception ignored) {}
@@ -617,67 +656,52 @@ public class CastRemoteActivity extends AppCompatActivity {
         });
     }
 
-    private void powerOnDevice(DeviceItem dev) {
-        setStatus("Turning on " + dev.name + " via Google Home...");
-        GoogleHomePowerBridge.setPower(this, dev.name, true, (success, msg) -> {
+    /**
+     * Single Power Toggle: switches TV between ON and OFF via Google Home SDK OnOff trait,
+     * falling back to Android TV Remote v2 and Cast HDMI-CEC wake.
+     */
+    private void togglePowerDevice(DeviceItem dev) {
+        final boolean targetOn = !dev.powerOn;
+        setStatus((targetOn ? "Turning ON " : "Turning OFF ") + dev.name + " via Google Home...");
+        GoogleHomePowerBridge.setPower(this, dev.name, targetOn, (success, msg) -> {
             if (success) {
-                dev.isPowerOn = true;
-                setStatus("Turned ON " + msg + " via Google Home.");
+                dev.powerOn = targetOn;
+                if (!targetOn) dev.state = "IDLE";
+                setStatus("Turned " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
                 mainHandler.post(this::renderDevices);
                 return;
             }
             worker.execute(() -> {
                 if (engine.isPaired(dev.id)) {
                     try {
-                        engine.sendPower(dev.id, dev.host, CastAndTvEngine.PowerAction.POWER_ON);
-                        dev.isPowerOn = true;
-                        setStatus("Turned ON " + dev.name + " via Android TV Remote.");
-                        mainHandler.post(this::renderDevices);
-                        return;
-                    } catch (Exception ignored) {}
-                }
-                try {
-                    engine.wakeViaCast(dev.host, dev.port);
-                    dev.isPowerOn = true;
-                    setStatus("Woke " + dev.name + " via Cast HDMI-CEC.");
-                    mainHandler.post(this::renderDevices);
-                } catch (Exception e) {
-                    setStatus("Turn on failed: " + msg);
-                }
-            });
-        });
-    }
-
-    private void powerOffDevice(DeviceItem dev) {
-        setStatus("Turning off " + dev.name + " via Google Home...");
-        GoogleHomePowerBridge.setPower(this, dev.name, false, (success, msg) -> {
-            if (success) {
-                dev.isPowerOn = false;
-                dev.state = "IDLE";
-                setStatus("Turned OFF " + msg + " via Google Home.");
-                mainHandler.post(this::renderDevices);
-                return;
-            }
-            worker.execute(() -> {
-                if (engine.isPaired(dev.id)) {
-                    try {
-                        engine.sendPower(dev.id, dev.host, CastAndTvEngine.PowerAction.POWER_OFF);
-                        dev.isPowerOn = false;
-                        dev.state = "IDLE";
-                        setStatus("Turned OFF " + dev.name + " via Android TV Remote.");
+                        engine.sendPower(dev.id, dev.host,
+                                targetOn ? CastAndTvEngine.PowerAction.POWER_ON : CastAndTvEngine.PowerAction.POWER_OFF);
+                        dev.powerOn = targetOn;
+                        if (!targetOn) dev.state = "IDLE";
+                        setStatus("Turned " + (targetOn ? "ON " : "OFF ") + dev.name + " via Android TV Remote.");
                         mainHandler.post(this::renderDevices);
                         return;
                     } catch (Exception e) {
-                        setStatus("Turn off failed: " + e.getMessage());
+                        setStatus("Power toggle failed: " + e.getMessage());
                         return;
                     }
                 }
-                try {
-                    engine.beginPairing(dev.id, dev.host);
-                    mainHandler.post(() -> showPinDialog(dev));
-                    return;
-                } catch (Exception ignored) {}
-                setStatus("Could not turn off " + dev.name + " (" + msg + ").");
+                if (targetOn) {
+                    try {
+                        engine.wakeViaCast(dev.host, dev.port);
+                        dev.powerOn = true;
+                        setStatus("Woke " + dev.name + " via Cast HDMI-CEC.");
+                        mainHandler.post(this::renderDevices);
+                        return;
+                    } catch (Exception ignored) {}
+                } else {
+                    try {
+                        engine.beginPairing(dev.id, dev.host);
+                        mainHandler.post(() -> showPinDialog(dev));
+                        return;
+                    } catch (Exception ignored) {}
+                }
+                setStatus("Could not toggle power on " + dev.name + " (" + msg + ").");
             });
         });
     }
@@ -703,7 +727,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
         new AlertDialog.Builder(this)
                 .setTitle("Pair with " + dev.name)
-                .setMessage("Enter the 6-character hex code shown on your TV to enable real Turn On & Turn Off.")
+                .setMessage("Enter the 6-character hex code shown on your TV.")
                 .setView(pinInput)
                 .setCancelable(false)
                 .setPositiveButton("Confirm Pair", (d, w) -> {
@@ -712,7 +736,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     worker.execute(() -> {
                         try {
                             engine.completePairing(pin);
-                            setStatus("Paired with " + dev.name + "! Turn On & Turn Off enabled.");
+                            setStatus("Paired with " + dev.name + "!");
                             mainHandler.post(this::renderDevices);
                         } catch (Exception e) {
                             engine.cancelPairing();
@@ -727,7 +751,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 .show();
     }
 
-    // MARK: - Device Cast Receiver (Port 8766 — works on Phone & Google TV)
+    // MARK: - Device Cast Receiver Toggle (Port 8766)
 
     private void toggleReceiving() {
         if (isReceiving) stopReceiving(); else startReceiving();
@@ -739,7 +763,9 @@ public class CastRemoteActivity extends AppCompatActivity {
             receiverServer = server;
             isReceiving = true;
             String name = "Cast Utilities " + Build.MODEL;
-            btnReceive.setText("Stop Receiving (" + Build.MODEL + ")");
+            btnReceiveToggle.setText("Receive: ON");
+            btnReceiveToggle.setTextColor(Color.WHITE);
+            btnReceiveToggle.setBackground(gradientButtonBg(new int[]{COL_EMERALD, COL_CYAN}, Color.TRANSPARENT));
             setStatus("Receiving as " + name + " - keep app open.");
 
             worker.execute(() -> {
@@ -774,7 +800,11 @@ public class CastRemoteActivity extends AppCompatActivity {
         if (regListener != null) { try { nsdManager.unregisterService(regListener); } catch (Exception ignored) {} regListener = null; }
         if (receiverServer != null) { try { receiverServer.close(); } catch (Exception ignored) {} receiverServer = null; }
         mainHandler.post(() -> {
-            if (btnReceive != null) btnReceive.setText("Receive Casts on This Device");
+            if (btnReceiveToggle != null) {
+                btnReceiveToggle.setText("Receive: OFF");
+                btnReceiveToggle.setTextColor(COL_TEXT);
+                btnReceiveToggle.setBackground(gradientButtonBg(new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_SLATE_TOP));
+            }
         });
     }
 
