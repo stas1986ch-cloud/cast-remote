@@ -1,0 +1,46 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.ProjectAutoSwitch" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Primary brand color. -->
+        <item name="colorPrimary">@color/neon_cyan</item>
+        <item name="colorPrimaryVariant">@color/bg_dark</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <!-- Secondary brand color. -->
+        <item name="colorSecondary">@color/neon_cyan</item>
+        <item name="colorSecondaryVariant">@color/cyan_glow</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <!-- Status bar color. -->
+        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+
+        <!-- Fix Spinner Dropdown Selection Visibility -->
+        <item name="spinnerStyle">@style/Widget.AppCompat.Spinner</item>
+        <item name="android:spinnerItemStyle">@style/CustomSpinnerItem</item>
+        <item name="android:spinnerDropDownItemStyle">@style/CustomSpinnerDropDownItem</item>
+    </style>
+
+    <!--
+      Instant Splash Theme.
+      Uses a drawable as windowBackground to ensure the logo and black background
+      appear the VERY SECOND the app process starts, eliminating the "white flash".
+    -->
+    <style name="Theme.ProjectAutoSwitch.NoActionBar.Fullscreen" parent="Theme.ProjectAutoSwitch">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">true</item>
+        <!-- Requirement: Absolute BLACK background with logo from the first millisecond -->
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+    <style name="CustomSpinnerItem" parent="Widget.AppCompat.TextView.SpinnerItem">
+        <item name="android:textColor">@color/neon_cyan</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:paddingStart">12dp</item>
+        <item name="android:paddingEnd">12dp</item>
+    </style>
+
+    <style name="CustomSpinnerDropDownItem" parent="Widget.AppCompat.DropDownItem.Spinner">
+        <item name="android:textColor">@color/neon_cyan</item>
+        <item name="android:background">@color/bg_dark</item>
+        <item name="android:paddingTop">16dp</item>
+        <item name="android:paddingBottom">16dp</item>
+        <item name="android:checkMarkTint">@color/neon_cyan</item>
+    </style>
+</resources>

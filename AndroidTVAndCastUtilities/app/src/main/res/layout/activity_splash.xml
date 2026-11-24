@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- Brand Logo / Background -->
+    <ImageView
+        android:id="@+id/splash_logo"
+        android:layout_width="260dp"
+        android:layout_height="260dp"
+        android:layout_gravity="center"
+        android:src="@mipmap/ic_launcher_foreground"
+        android:contentDescription="Android Utilities Logo" />
+
+    <!-- Ad Container -->
+    <FrameLayout
+        android:id="@+id/ad_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- Top Overlay Bar (Countdown & Skip Button) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:gravity="end|center_vertical"
+        android:orientation="horizontal"
+        android:padding="24dp">
+
+        <!-- Countdown badge -->
+        <TextView
+            android:id="@+id/ad_countdown"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="#99000000"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:textColor="#00FFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:text="Ad: 5s"
+            android:visibility="gone" />
+
+        <!-- Skip Button (Visible after 5s) -->
+        <Button
+            android:id="@+id/btn_skip_ad"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:layout_marginStart="12dp"
+            android:background="@drawable/button_selector"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:paddingStart="20dp"
+            android:paddingEnd="20dp"
+            android:text="SKIP AD [OK]"
+            android:textColor="@color/button_text_selector"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+    </LinearLayout>
+
+</FrameLayout>

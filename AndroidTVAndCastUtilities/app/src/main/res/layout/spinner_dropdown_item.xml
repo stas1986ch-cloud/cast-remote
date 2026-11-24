@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Custom layout for each item in the HDMI selection dropdown.
+  Ensures consistent styling across all Android versions.
+-->
+<CheckedTextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/text1"
+    style="?android:attr/spinnerDropDownItemStyle"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:padding="16dp"
+    android:textColor="@color/spinner_text_selector"
+    android:background="@drawable/spinner_item_selector"
+    android:textSize="18sp"
+    android:ellipsize="marquee"
+    android:gravity="center_vertical" />

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Solid Hexagon Border -->
+    <path
+        android:pathData="M54,15 L92,36 L92,72 L54,93 L16,72 L16,36 Z"
+        android:strokeWidth="2"
+        android:strokeColor="#00FFFF" />
+
+    <!-- Main Projector Lens Circle -->
+    <path
+        android:pathData="M54,48m-20,0a20,20 0,1 1,40 0a20,20 0,1 1,-40 0"
+        android:strokeWidth="2"
+        android:strokeColor="#00FFFF" />
+
+    <!-- Inner AI Core -->
+    <path
+        android:pathData="M54,48m-10,0a10,10 0,1 1,20 0a10,10 0,1 1,-20 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="48"
+                android:gradientRadius="10"
+                android:type="radial">
+                <item android:offset="0" android:color="#00FFFF" />
+                <item android:offset="1" android:color="#004444" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Stylized "ANDROID" Text (Simplified Paths) -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M25,78 L28,78 L29,82 L31,78 L34,78 L30,70 L29,70 Z" /> <!-- A -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M36,70 L36,82 L38,82 L38,78 L40,82 L42,82 L39,76 L42,70 L40,70 L38,74 L38,70 Z" /> <!-- N -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M44,70 L44,82 L48,82 C51,82 51,70 48,70 Z M46,72 L47,72 C48,72 48,80 47,80 L46,80 Z" /> <!-- D -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M53,70 L53,82 L55,82 L55,78 L57,78 L59,82 L61,82 L58,76 C60,75 60,70 57,70 Z M55,72 L57,72 C58,72 58,76 57,76 L55,76 Z" /> <!-- R -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M63,70 L63,82 L69,82 L69,80 L65,80 L65,70 Z" /> <!-- L (Simulated O) -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M71,70 L71,82 L73,82 L73,70 Z" /> <!-- I -->
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M75,70 L75,82 L79,82 C82,82 82,70 79,70 Z M77,72 L78,72 C79,72 79,80 78,80 L77,80 Z" /> <!-- D -->
+
+    <!-- Stylized "UTILITY" Text (Simplified Paths) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M35,85 L35,91 C35,93 40,93 40,91 L40,85 L38,85 L38,91 C38,92 37,92 37,91 L37,85 Z" /> <!-- U -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M42,85 L42,87 L44,87 L44,93 L46,93 L46,87 L48,87 L48,85 Z" /> <!-- T -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50,85 L50,93 L52,93 L52,85 Z" /> <!-- I -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,85 L54,93 L59,93 L59,91 L56,91 L56,85 Z" /> <!-- L -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M61,85 L61,93 L63,93 L63,85 Z" /> <!-- I -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M65,85 L65,87 L67,87 L67,93 L69,93 L69,87 L71,87 L71,85 Z" /> <!-- T -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M73,85 L75,89 L77,85 L79,85 L76,91 L76,93 L74,93 L74,91 L71,85 Z" /> <!-- Y -->
+
+</vector>

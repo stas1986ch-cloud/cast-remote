@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  BACKGROUND SELECTOR FOR DROPDOWN ITEMS
+  Requirement 1: Default DARK BACKGROUND (#0A0E17)
+  Requirement 5: SELECTOR COLOR (Focused/Selected) is CYAN (#00FFFF)
+  Requirement 6: Reverts to DARK when selector moves away
+-->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      SELECTOR STATE: Requirement 5
+      This captures focus (from D-pad/Remote) and the current selection.
+      Result: Background turns solid CYAN.
+    -->
+    <item android:state_focused="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#00FFFF" />
+        </shape>
+    </item>
+    <item android:state_selected="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#00FFFF" />
+        </shape>
+    </item>
+    <item android:state_activated="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#00FFFF" />
+        </shape>
+    </item>
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#00CCCC" />
+        </shape>
+    </item>
+
+    <!--
+      DEFAULT STATE: Requirement 1 & 6
+      Result: Returns to DARK BACKGROUND (#0A0E17)
+    -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#0A0E17" />
+        </shape>
+    </item>
+</selector>
