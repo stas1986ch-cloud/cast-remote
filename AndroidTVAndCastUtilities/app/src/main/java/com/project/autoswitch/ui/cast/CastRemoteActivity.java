@@ -193,11 +193,26 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        GoogleHomePowerBridge.unregisterActivity(this);
         stopDiscovery();
         stopReceiving();
         engine.cancelPairing();
         worker.shutdownNow();
         super.onDestroy();
+    }
+
+    private void runSafeBg(Runnable task) {
+        if (isFinishing() || isDestroyed() || worker.isShutdown()) return;
+        try {
+            worker.execute(task);
+        } catch (Exception ignored) {}
+    }
+
+    private void runSafeUi(Runnable task) {
+        mainHandler.post(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            task.run();
+        });
     }
 
     private int dp(int v) {
@@ -811,25 +826,27 @@ public class CastRemoteActivity extends AppCompatActivity {
      */
     private void togglePowerDevice(DeviceItem dev) {
         final boolean targetOn = !dev.powerOn;
-        setStatus((targetOn ? "Turning ON " : "Turning OFF ") + dev.name + " via Google Home...");
+        setStatus((targetOn ? "Turning ON " : "Turning OFF ") + dev.name + "...");
         GoogleHomePowerBridge.setPower(this, dev.name, targetOn, (success, msg) -> {
+            if (isFinishing() || isDestroyed()) return;
             if (success) {
                 dev.powerOn = targetOn;
                 if (!targetOn) dev.state = "IDLE";
                 saveDevicesToPrefs();
                 setStatus("Turned " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
-                mainHandler.post(this::renderDevices);
+                runSafeUi(this::renderDevices);
                 return;
             }
-            worker.execute(() -> {
+            runSafeBg(() -> {
                 if (engine.isPaired(dev.id)) {
                     try {
                         engine.sendPower(dev.id, dev.host,
                                 targetOn ? CastAndTvEngine.PowerAction.POWER_ON : CastAndTvEngine.PowerAction.POWER_OFF);
                         dev.powerOn = targetOn;
                         if (!targetOn) dev.state = "IDLE";
+                        saveDevicesToPrefs();
                         setStatus("Turned " + (targetOn ? "ON " : "OFF ") + dev.name + " via Android TV Remote.");
-                        mainHandler.post(this::renderDevices);
+                        runSafeUi(this::renderDevices);
                         return;
                     } catch (Exception e) {
                         setStatus("Power toggle failed: " + e.getMessage());
@@ -840,18 +857,19 @@ public class CastRemoteActivity extends AppCompatActivity {
                     try {
                         engine.wakeViaCast(dev.host, dev.port);
                         dev.powerOn = true;
+                        saveDevicesToPrefs();
                         setStatus("Woke " + dev.name + " via Cast HDMI-CEC.");
-                        mainHandler.post(this::renderDevices);
+                        runSafeUi(this::renderDevices);
                         return;
                     } catch (Exception ignored) {}
                 } else {
                     try {
                         engine.beginPairing(dev.id, dev.host);
-                        mainHandler.post(() -> showPinDialog(dev));
+                        runSafeUi(() -> showPinDialog(dev));
                         return;
                     } catch (Exception ignored) {}
                 }
-                setStatus("Could not toggle power on " + dev.name + " (" + msg + ").");
+                setStatus("Power toggle unavailable (" + msg + "). Tap Pair for Android TV PIN control.");
             });
         });
     }

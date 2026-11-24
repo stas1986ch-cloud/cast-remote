@@ -1,12 +1,11 @@
 /**
  * @file GoogleHomePowerBridge.kt
- * @summary Kotlin-to-Java bridge exposing Google Home SDK OnOff.on()/off() TV power control to CastRemoteActivity.
- * @description Initializes HomeClient with CastingVideoPlayerDevice, GoogleTVDevice, and OnOff traits, caches live HomeDevice entries, and provides callback-based setPower for Java callers.
- * @testing Compiled with AGP 9.1.0 and Google Home SDK 17.1.0 via Gradle release APK build.
+ * @summary Safe Kotlin-to-Java bridge for Google Home SDK OnOff.on()/off() with crash-proof permission handling and fallback latching.
+ * @description Creates/binds HomeClient per-Activity in onCreate, serializes permission consent with an AtomicBoolean, catches all Throwables, and latches consent failure to prevent login kick-out loops.
+ * @testing Compiled and lint-checked in Gradle signed assembleRelease (v2.3).
  */
 package com.project.autoswitch.ui.cast
 
-import android.content.Context
 import androidx.activity.ComponentActivity
 import com.google.home.ConsentScreenOptions
 import com.google.home.FactoryRegistry
@@ -27,7 +26,9 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 object GoogleHomePowerBridge {
 
@@ -36,9 +37,13 @@ object GoogleHomePowerBridge {
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var client: HomeClient? = null
+    private val consentInFlight = AtomicBoolean(false)
     private val devicesByLowerName = ConcurrentHashMap<String, HomeDevice>()
+
+    @Volatile private var boundClient: HomeClient? = null
+    @Volatile private var boundActivityRef: WeakReference<ComponentActivity>? = null
     @Volatile private var lastSyncMs = 0L
+    @Volatile private var homeConsentFailedReason: String? = null
 
     private fun buildRegistry(): FactoryRegistry = FactoryRegistry(
         types = listOf(
@@ -71,24 +76,31 @@ object GoogleHomePowerBridge {
         )
     )
 
+    @JvmStatic
     @Synchronized
-    private fun getClient(context: Context): HomeClient {
-        client?.let { return it }
-        val config = HomeConfig(
-            coroutineContext = Dispatchers.IO,
-            factoryRegistry = buildRegistry(),
-            homePlatformScope = HomeConfig.HomePlatformScope.HOME_PLATFORM_SCOPE_VERSION_1
-        )
-        return Home.getClient(context.applicationContext, homeConfig = config).also {
-            client = it
+    fun registerActivity(activity: ComponentActivity) {
+        try {
+            val config = HomeConfig(
+                coroutineContext = Dispatchers.IO,
+                factoryRegistry = buildRegistry(),
+                homePlatformScope = HomeConfig.HomePlatformScope.HOME_PLATFORM_SCOPE_VERSION_1
+            )
+            val hc = Home.getClient(activity.applicationContext, homeConfig = config)
+            hc.registerActivityResultCallerForPermissions(activity)
+            boundClient = hc
+            boundActivityRef = WeakReference(activity)
+        } catch (t: Throwable) {
+            boundClient = null
+            homeConsentFailedReason = "Google Home init unavailable: ${t.message ?: t.javaClass.simpleName}"
         }
     }
 
     @JvmStatic
-    fun registerActivity(activity: ComponentActivity) {
-        try {
-            getClient(activity).registerActivityResultCallerForPermissions(activity)
-        } catch (_: Exception) {
+    @Synchronized
+    fun unregisterActivity(activity: ComponentActivity) {
+        if (boundActivityRef?.get() === activity) {
+            boundActivityRef = null
+            boundClient = null
         }
     }
 
@@ -105,42 +117,64 @@ object GoogleHomePowerBridge {
             try {
                 val v = t()
                 if (v != null) return v
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
             }
         }
         return null
     }
 
     private suspend fun ensureSynced(activity: ComponentActivity, forceRefresh: Boolean): String? {
-        val hc = getClient(activity)
-        val permState = withTimeout(12_000) {
+        homeConsentFailedReason?.let { return it }
+        val hc = boundClient ?: return "Google Home client not ready"
+        if (boundActivityRef?.get() !== activity || activity.isFinishing || activity.isDestroyed) {
+            return "Activity no longer active"
+        }
+
+        val permState = withTimeout(10_000) {
             hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
         }
         if (permState != PermissionsState.GRANTED) {
-            val res = withContext(Dispatchers.Main) {
-                hc.requestPermissions(
-                    ForcePermissionFlow.FORCE_LAUNCH,
-                    consentScreenOptions = ConsentScreenOptions(
-                        structureId = null,
-                        allowedStructureIds = emptyList(),
-                        isAllowStructureChange = false
-                    )
-                )
+            if (!consentInFlight.compareAndSet(false, true)) {
+                return "Google Home sign-in already in progress"
             }
-            if (res.status != PermissionsResultStatus.SUCCESS) {
-                return "Google Home permission not granted (${res.status})"
+            try {
+                val res = withContext(Dispatchers.Main) {
+                    if (activity.isFinishing || activity.isDestroyed) {
+                        throw IllegalStateException("Activity closed")
+                    }
+                    hc.requestPermissions(
+                        ForcePermissionFlow.FORCE_LAUNCH,
+                        consentScreenOptions = ConsentScreenOptions(
+                            structureId = null,
+                            allowedStructureIds = emptyList(),
+                            isAllowStructureChange = false
+                        )
+                    )
+                }
+                if (res.status != PermissionsResultStatus.SUCCESS) {
+                    val reason = "Google Home login not authorized (${res.status})"
+                    homeConsentFailedReason = reason
+                    return reason
+                }
+            } catch (t: Throwable) {
+                val reason = "Google Home login unavailable (${t.message ?: t.javaClass.simpleName})"
+                homeConsentFailedReason = reason
+                return reason
+            } finally {
+                consentInFlight.set(false)
             }
         }
+
         val stale = (System.currentTimeMillis() - lastSyncMs) > 5 * 60 * 1000L
         if (forceRefresh || devicesByLowerName.isEmpty() || stale) {
-            val structures = withTimeout(12_000) { hc.structures().first() }
+            val structures = withTimeout(10_000) { hc.structures().first() }
             for (s in structures) {
                 try {
-                    val devs = withTimeout(12_000) { s.devices().first() }
+                    val devs = withTimeout(10_000) { s.devices().first() }
                     for (d in devs) {
                         devicesByLowerName[d.name.trim().lowercase()] = d
                     }
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                 }
             }
             if (devicesByLowerName.isNotEmpty()) lastSyncMs = System.currentTimeMillis()
@@ -181,8 +215,8 @@ object GoogleHomePowerBridge {
                 }
                 if (turnOn) onOff.on() else onOff.off()
                 callback.onResult(true, dev.name)
-            } catch (e: Exception) {
-                callback.onResult(false, e.message ?: "Google Home power error")
+            } catch (t: Throwable) {
+                callback.onResult(false, t.message ?: t.javaClass.simpleName)
             }
         }
     }
