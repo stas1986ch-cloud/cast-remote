@@ -1,8 +1,8 @@
 /**
  * @file CastRemoteActivity.java
- * @summary Redesigned Phone & Google TV Cast Remote screen with uniform gradient buttons, 2-per-line control squares, and Power On/Off toggle.
- * @description Renders a consistent dark-neon gradient UI where every menu and device control shares the same rounded shape in 2-column rows, backed by GoogleHomePowerBridge, CastAndTvEngine, and SharedPreferences pinning.
- * @testing Compiled and lint-checked via Gradle signed assembleRelease (v2.1) with D-pad focus states and touch targets verified.
+ * @summary Unified Phone & Google TV Cast Remote screen with persistent network device storage, merged Control & Mirror menu, 2-per-line gradient squares, and Power On/Off toggle.
+ * @description Persists discovered TVs and phones in SharedPreferences so pinned/sleeping devices load immediately, merges cast/mirror/control actions into one 2-column gradient panel, and delegates TV power to GoogleHomePowerBridge and CastAndTvEngine.
+ * @testing Compiled and lint-verified via Gradle signed assembleRelease (v2.2).
  */
 package com.project.autoswitch.ui.cast;
 
@@ -31,6 +31,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -53,6 +54,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private static final String PREFS = "CastUtilitiesPrefs";
     private static final String KEY_PINNED = "pinned_device_ids";
+    private static final String KEY_SAVED_DEVICES = "saved_network_devices_v1";
     private static final String CAST_TYPE = "_googlecast._tcp.";
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
@@ -133,7 +135,60 @@ public class CastRemoteActivity extends AppCompatActivity {
         pinnedIds = new HashSet<>(prefs.getStringSet(KEY_PINNED, new HashSet<>()));
 
         setContentView(buildUi());
+        loadSavedDevices();
+        renderDevices();
         refreshDevices();
+    }
+
+    private void loadSavedDevices() {
+        try {
+            String raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_SAVED_DEVICES, null);
+            if (raw == null || raw.isEmpty()) return;
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                String id = o.optString("id", "");
+                String name = o.optString("name", "");
+                String host = o.optString("host", "");
+                int port = o.optInt("port", 8009);
+                boolean isPhone = o.optBoolean("isPhone", false);
+                if (id.isEmpty() || name.isEmpty() || host.isEmpty()) continue;
+                DeviceItem item = new DeviceItem(
+                        id, name, isPhone ? "PHONE (SAVED)" : "SAVED",
+                        isPhone ? "Cast Receiver" : "",
+                        isPhone, host, port);
+                item.powerOn = o.optBoolean("powerOn", true);
+                if (isPhone) {
+                    phoneDevices.putIfAbsent(id, item);
+                } else {
+                    castDevices.putIfAbsent(id, item);
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void saveDevicesToPrefs() {
+        try {
+            JSONArray arr = new JSONArray();
+            List<DeviceItem> all = new ArrayList<>();
+            all.addAll(castDevices.values());
+            all.addAll(phoneDevices.values());
+            for (DeviceItem d : all) {
+                JSONObject o = new JSONObject();
+                o.put("id", d.id);
+                o.put("name", d.name);
+                o.put("host", d.host);
+                o.put("port", d.port);
+                o.put("isPhone", d.isPhone);
+                o.put("powerOn", d.powerOn);
+                arr.put(o);
+            }
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_SAVED_DEVICES, arr.toString())
+                    .apply();
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -267,31 +322,61 @@ public class CastRemoteActivity extends AppCompatActivity {
         statusView.setPadding(0, dp(10), 0, dp(10));
         root.addView(statusView);
 
-        // YouTube link input (same rounded corner radius)
+        // Merged Control & Mirror Menu Card (uniform 2-per-line gradient squares)
+        LinearLayout menuCard = new LinearLayout(this);
+        menuCard.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable menuBg = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{COL_CARD, Color.parseColor("#101626")});
+        menuBg.setCornerRadius(dp(14));
+        menuBg.setStroke(dp(1), COL_SLATE_TOP);
+        menuCard.setBackground(menuBg);
+        menuCard.setPadding(dp(14), dp(14), dp(14), dp(14));
+
+        TextView menuTitle = new TextView(this);
+        menuTitle.setText("CONTROL & MIRROR MENU");
+        menuTitle.setTextColor(COL_NEON_CYAN);
+        menuTitle.setTextSize(12f);
+        menuTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        menuTitle.setPadding(0, 0, 0, dp(8));
+        menuCard.addView(menuTitle);
+
+        // YouTube link input inside the unified Control & Mirror panel
         linkInput = new EditText(this);
         linkInput.setHint("Paste a YouTube link (optional)");
         linkInput.setHintTextColor(COL_MUTED);
         linkInput.setTextColor(COL_TEXT);
         linkInput.setSingleLine(true);
-        linkInput.setBackground(gradientButtonBg(new int[]{COL_CARD, COL_CARD}, COL_SLATE_TOP));
+        linkInput.setBackground(gradientButtonBg(new int[]{COL_BG, COL_BG}, COL_SLATE_TOP));
         linkInput.setPadding(dp(14), dp(12), dp(14), dp(12));
         linkInput.setFocusable(true);
-        root.addView(linkInput);
+        menuCard.addView(linkInput);
 
-        // Top Menu: 2-per-line uniform gradient control squares
-        Button btnMirrorAll = makeControlSquare("Mirror Playing", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
+        // Row 1: Mirror All | Play on Pinned
+        Button btnMirrorAll = makeControlSquare("Mirror All", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
         btnMirrorAll.setOnClickListener(v -> mirrorTargets(null));
 
-        Button btnRefresh = makeControlSquare("Refresh", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
+        Button btnPlayPinned = makeControlSquare("Play on Pinned", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
+        btnPlayPinned.setOnClickListener(v -> playOnPinnedDevices());
+        menuCard.addView(makeTwoUpRow(btnMirrorAll, btnPlayPinned, 10));
+
+        // Row 2: Refresh | Stop All
+        Button btnRefresh = makeControlSquare("Refresh", new int[]{COL_SLATE_TOP, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
         btnRefresh.setOnClickListener(v -> refreshDevices());
-        root.addView(makeTwoUpRow(btnMirrorAll, btnRefresh, 12));
 
         Button btnStopAll = makeControlSquare("Stop All", new int[]{COL_MAGENTA, COL_AMBER}, Color.WHITE, Color.TRANSPARENT);
         btnStopAll.setOnClickListener(v -> stopAllDevices());
+        menuCard.addView(makeTwoUpRow(btnRefresh, btnStopAll, 8));
 
+        // Row 3: Receive Toggle | Power Off All
         btnReceiveToggle = makeControlSquare("Receive: OFF", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
         btnReceiveToggle.setOnClickListener(v -> toggleReceiving());
-        root.addView(makeTwoUpRow(btnStopAll, btnReceiveToggle, 8));
+
+        Button btnPowerOffAll = makeControlSquare("Power Off All", new int[]{COL_CRIMSON, COL_MAGENTA}, Color.WHITE, Color.TRANSPARENT);
+        btnPowerOffAll.setOnClickListener(v -> powerOffAllDevices());
+        menuCard.addView(makeTwoUpRow(btnReceiveToggle, btnPowerOffAll, 8));
+
+        root.addView(menuCard);
 
         // Spacer before device list
         LinearLayout.LayoutParams listLp = new LinearLayout.LayoutParams(
@@ -333,6 +418,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     false, host, port);
             if (existing != null) item.powerOn = existing.powerOn;
             castDevices.put(uid, item);
+            saveDevicesToPrefs();
             mainHandler.post(this::renderDevices);
         });
 
@@ -344,6 +430,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             String id = "phone:" + name;
             int port = info.getPort() > 0 ? info.getPort() : RECEIVER_PORT;
             phoneDevices.put(id, new DeviceItem(id, name, "PHONE", "Cast Receiver", true, host, port));
+            saveDevicesToPrefs();
             mainHandler.post(this::renderDevices);
         });
 
@@ -641,6 +728,68 @@ public class CastRemoteActivity extends AppCompatActivity {
         });
     }
 
+    private void playOnPinnedDevices() {
+        CastWire.ParsedLink parsed = CastWire.parseYouTubeLink(linkInput.getText().toString());
+        if (parsed.videoId == null) {
+            setStatus("Paste a valid YouTube link first.");
+            return;
+        }
+        List<DeviceItem> targets = new ArrayList<>();
+        for (DeviceItem d : castDevices.values()) {
+            if (pinnedIds.contains(d.id)) targets.add(d);
+        }
+        for (DeviceItem d : phoneDevices.values()) {
+            if (pinnedIds.contains(d.id)) targets.add(d);
+        }
+        if (targets.isEmpty()) {
+            targets.addAll(castDevices.values());
+        }
+        if (targets.isEmpty()) {
+            setStatus("No devices available. Tap Refresh first.");
+            return;
+        }
+        setStatus("Casting to " + targets.size() + " device(s)...");
+        worker.execute(() -> {
+            int ok = 0;
+            for (DeviceItem dev : targets) {
+                try {
+                    if (dev.isPhone) {
+                        engine.sendToPhone(dev.host, dev.port, parsed.videoId, parsed.startSeconds);
+                    } else {
+                        String screenId = engine.launchYouTubeAndGetScreenId(dev.host, dev.port);
+                        engine.playYouTubeOnScreen(screenId, parsed.videoId, parsed.startSeconds);
+                        dev.state = "PLAYING";
+                        dev.contentId = parsed.videoId;
+                        dev.powerOn = true;
+                    }
+                    ok++;
+                } catch (Exception ignored) {}
+            }
+            saveDevicesToPrefs();
+            setStatus("Cast started on " + ok + " of " + targets.size() + " device(s).");
+            mainHandler.post(this::renderDevices);
+        });
+    }
+
+    private void powerOffAllDevices() {
+        List<DeviceItem> tvs = new ArrayList<>(castDevices.values());
+        if (tvs.isEmpty()) {
+            setStatus("No TVs found.");
+            return;
+        }
+        setStatus("Turning off " + tvs.size() + " TV(s) via Google Home...");
+        for (DeviceItem tv : tvs) {
+            GoogleHomePowerBridge.setPower(this, tv.name, false, (success, msg) -> {
+                if (success) {
+                    tv.powerOn = false;
+                    tv.state = "IDLE";
+                    saveDevicesToPrefs();
+                    mainHandler.post(this::renderDevices);
+                }
+            });
+        }
+    }
+
     private void stopAllDevices() {
         setStatus("Stopping all TVs...");
         worker.execute(() -> {
@@ -667,6 +816,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             if (success) {
                 dev.powerOn = targetOn;
                 if (!targetOn) dev.state = "IDLE";
+                saveDevicesToPrefs();
                 setStatus("Turned " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
                 mainHandler.post(this::renderDevices);
                 return;
