@@ -46,6 +46,10 @@ object GoogleHomePowerBridge {
         fun onResult(success: Boolean, message: String)
     }
 
+    fun interface StatesCallback {
+        fun onStates(statesByLowerName: Map<String, Boolean>)
+    }
+
     private const val CRASH_FILE = "last_crash.txt"
     private const val DIAG_FILE = "cast_diag.txt"
 
@@ -283,14 +287,12 @@ object GoogleHomePowerBridge {
                 }
                 logDiag(activity, "Consent result: ${res.status} ${res.errorMessage ?: ""}")
                 if (res.status != PermissionsResultStatus.SUCCESS) {
-                    val reason = "Google Home not authorized for this package (${res.status} ${res.errorMessage ?: ""})".trim()
-                    homeConsentFailedReason = reason
-                    return reason
+                    // Do not permanently latch CANCELLED so user can retry cleanly on next switch toggle.
+                    return "Google Home consent returned ${res.status} ${res.errorMessage ?: ""}".trim()
                 }
             } catch (t: Throwable) {
                 val reason = "Google Home login error (${t.javaClass.simpleName}: ${t.message})"
                 logDiag(activity, reason)
-                homeConsentFailedReason = reason
                 return reason
             } finally {
                 consentInFlight.set(false)
@@ -322,6 +324,46 @@ object GoogleHomePowerBridge {
         return devicesByLowerName.entries.firstOrNull { (k, _) ->
             k.contains(norm) || norm.contains(k)
         }?.value
+    }
+
+    /**
+     * Passively reads live OnOff state for all Google Home devices (only if permission is already GRANTED,
+     * never triggering an unsolicited OAuth popup during background refresh).
+     */
+    @JvmStatic
+    fun queryPowerStates(activity: ComponentActivity, callback: StatesCallback) {
+        activity.lifecycleScope.launch(Dispatchers.IO + homeCoroutineHandler) {
+            try {
+                if (activity.isFinishing || activity.isDestroyed) return@launch
+                val hc = getOrCreateClient(activity)
+                val perm = withTimeout(5_000) {
+                    hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
+                }
+                if (perm != PermissionsState.GRANTED) return@launch
+                val structures = withTimeout(10_000) { hc.structures().first() }
+                val out = HashMap<String, Boolean>()
+                for (s in structures) {
+                    try {
+                        val devs = withTimeout(10_000) { s.devices().first() }
+                        for (d in devs) {
+                            val key = d.name.trim().lowercase()
+                            devicesByLowerName[key] = d
+                            val onOff = findOnOff(d)
+                            val cur = onOff?.onOff
+                            if (cur != null) {
+                                out[key] = cur
+                            }
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                if (out.isNotEmpty()) {
+                    lastSyncMs = System.currentTimeMillis()
+                    callback.onStates(out)
+                }
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     @JvmStatic
