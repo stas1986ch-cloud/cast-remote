@@ -4,7 +4,7 @@
  * @description Persists a self-signed RSA-2048 X.509 client certificate in app-private storage, validates 6-char hex PIN secrets via SHA-256, and sends state-aware power keycodes.
  * @testing Verified against androidtvremote2 protobuf field tags, ASN.1 DER X.509 encoding, and SHA-256 secret checksums.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
@@ -238,7 +238,7 @@ class AndroidTVRemoteManager(private val context: Context) {
         try {
             // 1. PairingRequest
             val req = ByteArrayOutputStream().apply {
-                write(ProtobufWire.stringField(1, "com.stas.castremote"))
+                write(ProtobufWire.stringField(1, "com.screencontrol.cast"))
                 write(ProtobufWire.stringField(2, "Cast Remote"))
             }.toByteArray()
             writeFramed(sock, pairingEnvelope(10, req))
@@ -391,7 +391,7 @@ class AndroidTVRemoteManager(private val context: Context) {
             ProtobufWire.stringField(2, android.os.Build.MANUFACTURER) +
             ProtobufWire.varintField(3, 1) +
             ProtobufWire.stringField(4, "1") +
-            ProtobufWire.stringField(5, "com.stas.castremote") +
+            ProtobufWire.stringField(5, "com.screencontrol.cast") +
             ProtobufWire.stringField(6, "1.3")
         val cfg = ProtobufWire.varintField(1, 622) + ProtobufWire.bytesField(2, info)
         return ProtobufWire.bytesField(1, cfg)

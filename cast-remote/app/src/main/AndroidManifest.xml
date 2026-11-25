@@ -12,7 +12,7 @@
 
     <application
         android:name=".CastRemoteApp"
-        android:label="Cast Remote Control"
+        android:label="Google Screen Control and Cast"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
@@ -26,7 +26,7 @@
         <activity android:name=".HomeDevicesActivity" android:screenOrientation="portrait" android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
-            android:authorities="com.stas.castremote.fileprovider"
+            android:authorities="com.screencontrol.cast.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
             <meta-data

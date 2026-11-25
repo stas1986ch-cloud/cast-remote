@@ -30,26 +30,26 @@ jobs:
 
       - name: Build and archive (unsigned)
         run: |
-          xcodebuild -workspace CastRemote.xcworkspace \
-            -scheme CastRemote \
+          xcodebuild -workspace GoogleScreenControlAndCast.xcworkspace \
+            -scheme GoogleScreenControlAndCast \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/CastRemote.xcarchive \
+            -archivePath build/GoogleScreenControlAndCast.xcarchive \
             archive \
             CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY=""
 
       - name: Package IPA
         run: |
-          APP_PATH=$(echo build/CastRemote.xcarchive/Products/Applications/*.app)
+          APP_PATH=$(echo build/GoogleScreenControlAndCast.xcarchive/Products/Applications/*.app)
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
-          zip -r CastRemote.ipa Payload
+          zip -r GoogleScreenControlAndCast.ipa Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: CastRemote-ipa
-          path: CastRemote.ipa
+          name: GoogleScreenControlAndCast-ipa
+          path: GoogleScreenControlAndCast.ipa
           retention-days: 30
 
       - name: Publish Release IPA
@@ -57,7 +57,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest CastRemote.ipa --clobber
+            gh release upload latest GoogleScreenControlAndCast.ipa --clobber
           else
-            gh release create latest CastRemote.ipa --title "Cast Remote (Latest)" --notes "Latest unsigned CastRemote.ipa build for AltStore."
+            gh release create latest GoogleScreenControlAndCast.ipa --title "Google Screen Control and Cast (Latest)" --notes "Latest unsigned GoogleScreenControlAndCast.ipa build for AltStore."
           fi

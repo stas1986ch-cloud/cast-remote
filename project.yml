@@ -1,9 +1,9 @@
-name: CastRemote
+name: GoogleScreenControlAndCast
 options:
-  bundleIdPrefix: com.stas
+  bundleIdPrefix: com.screencontrol
   deploymentTarget: "16.0"
 targets:
-  CastRemote:
+  GoogleScreenControlAndCast:
     type: application
     platform: iOS
     deploymentTarget: "16.0"
@@ -12,8 +12,8 @@ targets:
     info:
       path: Info.plist
       properties:
-        CFBundleDisplayName: Cast Remote
-        NSLocalNetworkUsageDescription: "Cast Remote finds TVs and phones on your Wi-Fi to cast YouTube to them."
+        CFBundleDisplayName: Google Screen Control and Cast
+        NSLocalNetworkUsageDescription: "Google Screen Control and Cast finds TVs and phones on your Wi-Fi to control and cast media to them."
         NSBonjourServices:
           - _googlecast._tcp
           - _233637DE._googlecast._tcp
@@ -23,7 +23,7 @@ targets:
           - youtube
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.stas.castremote
+        PRODUCT_BUNDLE_IDENTIFIER: com.screencontrol.cast
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "5.0"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"

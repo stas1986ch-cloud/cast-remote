@@ -701,7 +701,7 @@ public final class CastAndTvEngine {
                                 CastWire.stringField(2, Build.MANUFACTURER),
                                 CastWire.varintField(3, 1),
                                 CastWire.stringField(4, "1"),
-                                CastWire.stringField(5, "com.stas.castremote"),
+                                CastWire.stringField(5, "com.screencontrol.cast"),
                                 CastWire.stringField(6, "3.0")
                         );
                         byte[] cfg = CastWire.concat(CastWire.varintField(1, 622), CastWire.bytesField(2, info));
@@ -764,7 +764,7 @@ public final class CastAndTvEngine {
                                 CastWire.stringField(2, Build.MANUFACTURER),
                                 CastWire.varintField(3, 1),
                                 CastWire.stringField(4, "1"),
-                                CastWire.stringField(5, "com.stas.castremote"),
+                                CastWire.stringField(5, "com.screencontrol.cast"),
                                 CastWire.stringField(6, "2.6")
                         );
                         byte[] cfg = CastWire.concat(CastWire.varintField(1, 622), CastWire.bytesField(2, info));

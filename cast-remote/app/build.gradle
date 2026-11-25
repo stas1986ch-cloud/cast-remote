@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace "com.stas.castremote"
+    namespace "com.screencontrol.cast"
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.stas.castremote"
+        applicationId "com.screencontrol.cast"
         minSdk 26
         targetSdk 35
         versionCode 25
@@ -51,8 +51,9 @@ configurations.all {
 chaquopy {
     defaultConfig {
         version = "3.11"
-        def winPy = "C:/Users/schul/AppData/Local/Programs/Python/Python311/python.exe"
-        if (new File(winPy).exists()) {
+        def localAppData = System.getenv("LOCALAPPDATA")
+        def winPy = localAppData ? (localAppData.replace("\\", "/") + "/Programs/Python/Python311/python.exe") : ""
+        if (winPy && new File(winPy).exists()) {
             buildPython(winPy)
         } else {
             buildPython("python3")

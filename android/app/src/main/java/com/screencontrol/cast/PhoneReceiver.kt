@@ -4,7 +4,7 @@
  * @description Uses NsdManager (_castremote._tcp) and a lightweight ServerSocket handling POST /play and GET /ping, compatible with the iOS app.
  * @testing Verified for safe HTTP Content-Length reading, IPv6 URL bracketing, and safe YouTube Intent launching.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.content.Context
 import android.content.Intent

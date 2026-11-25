@@ -4,7 +4,7 @@
  * @description Supports watch?v=, youtu.be/, /shorts/, /embed/, /live/, bare IDs, and t= timestamps (e.g. 90s, 1h2m3s).
  * @testing Validated against standard YouTube URL patterns and boundary timestamp inputs.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 data class ParsedYouTubeLink(val videoId: String?, val startSeconds: Int)
 

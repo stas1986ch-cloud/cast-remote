@@ -4,7 +4,7 @@
  * @description Speaks 4-byte length-prefixed CastMessage protobufs over TLS directly to Cast receivers without Google Play Services dependencies.
  * @testing Verified for Cast v2 protobuf wire framing, heartbeat PONG replies, receiver app launch, and media status extraction.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

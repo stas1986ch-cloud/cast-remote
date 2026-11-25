@@ -5,7 +5,7 @@
  * @testing Compiled cleanly with Google Home SDK 17.1.0 via Gradle 8.9.
  */
 
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.content.Context
 import android.content.Intent

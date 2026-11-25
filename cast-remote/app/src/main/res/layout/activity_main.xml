@@ -20,10 +20,10 @@
                 android:id="@+id/titleText"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="CAST REMOTE CONTROL"
-                android:textSize="26sp"
+                android:text="GOOGLE SCREEN CONTROL AND CAST"
+                android:textSize="20sp"
                 android:textStyle="bold"
-                android:letterSpacing="0.15"
+                android:letterSpacing="0.08"
                 android:textColor="#E5E7EB" />
             <Button
                 android:id="@+id/btnMirrorPlaying"

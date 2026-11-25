@@ -5,7 +5,7 @@
  * @testing Compiled and packaged into a signed APK via Android Gradle CI with Chaquopy Python 3.11.
  */
 
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.app.AlertDialog
 import android.content.Context

@@ -13,5 +13,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "CastRemote"
+rootProject.name = "GoogleScreenControlAndCast"
 include ":app"

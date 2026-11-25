@@ -4,7 +4,7 @@
  * @description Renders device discovery, favorite pinning, YouTube cast/mirror/stop controls, TV Power On/Off, and Android TV PIN pairing dialog.
  * @testing Compiled and packaged into a signed APK via Android Gradle CI on Ubuntu.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -144,11 +144,11 @@ fun CastRemoteScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
-            text = "CAST REMOTE",
+            text = "GOOGLE SCREEN CONTROL AND CAST",
             style = TextStyle(
-                fontSize = 26.sp,
+                fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = 3.5.sp,
+                letterSpacing = 1.5.sp,
                 brush = Brush.horizontalGradient(listOf(Violet, Cyan, Magenta, Amber))
             )
         )

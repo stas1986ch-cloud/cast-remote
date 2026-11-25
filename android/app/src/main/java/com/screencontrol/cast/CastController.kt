@@ -4,7 +4,7 @@
  * @description Uses Android NsdManager with a WifiManager MulticastLock to discover Chromecasts and peer phones, persists pinned IDs in SharedPreferences, and exposes reactive Compose state.
  * @testing Verified for thread-safe state updates, pinned-first sorting, and fallback behavior between Android TV Remote v2 and Cast v2.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.content.Context
 import android.net.nsd.NsdManager

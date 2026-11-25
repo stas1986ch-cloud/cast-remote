@@ -4,7 +4,7 @@
  * @description Wraps Google HomeClient with CastingVideoPlayerDevice, GoogleTVDevice, and smart-home OnOff traits, caches live HomeDevice instances by name, and requests Home permissions when needed.
  * @testing Compiled with Google Home SDK 17.1.0 via Gradle 8.9 and verified against HomeDevicesActivity's OnOff trait resolution pattern.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.content.Context
 import androidx.activity.ComponentActivity

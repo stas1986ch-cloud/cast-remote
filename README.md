@@ -125,7 +125,7 @@ further fixes to both copies and keep them in sync.
 
 - `Sources/` — the six Swift files (app entry, UI, Cast manager, YouTube
   Lounge protocol, link parser, phone receiver).
-- `project.yml` — XcodeGen project: bundle id `com.stas.castremote`,
+- `project.yml` — XcodeGen project: bundle id `com.screencontrol.cast`,
   iOS 16+, universal (iPhone + iPad), Info.plist keys for local network,
   Bonjour services, and the `youtube` URL scheme.
 - `Podfile` — Google Cast SDK via CocoaPods (`google-cast-sdk ~> 4.8.4`).

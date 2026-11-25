@@ -4,7 +4,7 @@
  * @description Implements varint, length-delimited bytes/strings, and top-level field parsing with zero external protobuf runtime dependencies.
  * @testing Verified via Kotlin compilation in Android CI and parity with the verified Swift/Python wire test vectors.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import java.io.ByteArrayOutputStream
 

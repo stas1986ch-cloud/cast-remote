@@ -18,7 +18,7 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:banner="@mipmap/ic_banner"
-        android:label="AndroidTV &amp; Cast Utilities"
+        android:label="Google Screen Control and Cast"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.ProjectAutoSwitch">
 

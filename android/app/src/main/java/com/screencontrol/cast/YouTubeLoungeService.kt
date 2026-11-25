@@ -4,7 +4,7 @@
  * @description Fetches a lounge token from a TV screenId, binds a session (SID/gsessionid), and sends RFC-3986 form-encoded setPlaylist requests with stale-SID retry.
  * @testing Verified against casttube protocol sequencing and HTTP form-encoding boundary cases.
  */
-package com.stas.castremote
+package com.screencontrol.cast
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

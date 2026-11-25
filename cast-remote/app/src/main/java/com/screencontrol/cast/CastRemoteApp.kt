@@ -1,4 +1,4 @@
-package com.stas.castremote
+package com.screencontrol.cast
 
 import android.app.Application
 import android.content.ClipData

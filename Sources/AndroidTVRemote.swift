@@ -168,8 +168,8 @@ enum ASN1DER {
 final class ATVClientIdentity {
     static let shared = ATVClientIdentity()
 
-    private let keyTag = "com.stas.castremote.atv.rsa2048".data(using: .utf8)!
-    private let certLabel = "com.stas.castremote.atv.cert"
+    private let keyTag = "com.screencontrol.cast.atv.rsa2048".data(using: .utf8)!
+    private let certLabel = "com.screencontrol.cast.atv.cert"
 
     struct Bundle {
         let identity: SecIdentity
@@ -417,7 +417,7 @@ enum ProtobufWire {
 
     // MARK: Pairing Messages (port 6467)
 
-    static func pairingRequest(serviceName: String = "com.stas.castremote", clientName: String = "Cast Remote") -> Data {
+    static func pairingRequest(serviceName: String = "com.screencontrol.cast", clientName: String = "Google Screen Control and Cast") -> Data {
         var req = Data()
         req.append(stringField(1, serviceName))
         req.append(stringField(2, clientName))
@@ -473,7 +473,7 @@ enum ProtobufWire {
         info.append(stringField(2, "Apple"))
         info.append(varintField(3, 1))
         info.append(stringField(4, "1"))
-        info.append(stringField(5, "com.stas.castremote"))
+        info.append(stringField(5, "com.screencontrol.cast"))
         info.append(stringField(6, "1.0"))
         var cfg = Data()
         cfg.append(varintField(1, 622))
@@ -508,7 +508,7 @@ private final class ATVConnection {
     }
 
     private let connection: NWConnection
-    private let queue = DispatchQueue(label: "com.stas.castremote.atv.conn")
+    private let queue = DispatchQueue(label: "com.screencontrol.cast.atv.conn")
     private var readBuffer = Data()
     private let serverRSABox = ServerRSABox()
     var serverRSA: (modulus: Data, exponent: Data)? { serverRSABox.rsa }

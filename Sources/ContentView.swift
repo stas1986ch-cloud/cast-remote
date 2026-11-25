@@ -66,9 +66,9 @@ private struct ContentBodyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("CAST REMOTE")
-                    .font(.system(size: 26, weight: .bold))
-                    .tracking(0.15 * 26 / 10)
+                Text("GOOGLE SCREEN CONTROL AND CAST")
+                    .font(.system(size: 20, weight: .bold))
+                    .tracking(1.2)
                     .foregroundStyle(LinearGradient(colors: [violet, cyan, magenta, amber], startPoint: .leading, endPoint: .trailing))
 
                 gradientButton([violet, cyan, magenta, amber], "Mirror what's playing") {
