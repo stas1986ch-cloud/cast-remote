@@ -56,7 +56,10 @@ public final class CastAndTvEngine {
     public static final String YOUTUBE_APP_ID = "233637DE";
     public static final int ATV_PAIRING_PORT = 6467;
     public static final int ATV_REMOTE_PORT = 6466;
+    public static final long KEYCODE_VOLUME_UP = 24L;
+    public static final long KEYCODE_VOLUME_DOWN = 25L;
     public static final long KEYCODE_POWER = 26L;
+    public static final long KEYCODE_VOLUME_MUTE = 164L;
     public static final long KEYCODE_SLEEP = 223L;
     public static final long KEYCODE_WAKEUP = 224L;
 
@@ -78,12 +81,19 @@ public final class CastAndTvEngine {
         public final String title;
         public final String contentId;
         public final double position;
+        public final double volumeLevel; // 0.0 .. 1.0 (-1 if unknown)
+        public final boolean isMuted;
+        public final String volumeControlType; // "attenuation", "master", or "fixed"
 
-        public MediaStatus(String state, String title, String contentId, double position) {
+        public MediaStatus(String state, String title, String contentId, double position,
+                           double volumeLevel, boolean isMuted, String volumeControlType) {
             this.state = state;
             this.title = title;
             this.contentId = contentId;
             this.position = position;
+            this.volumeLevel = volumeLevel;
+            this.isMuted = isMuted;
+            this.volumeControlType = volumeControlType;
         }
     }
 
@@ -204,14 +214,30 @@ public final class CastAndTvEngine {
             writeCastMsg(out, RECEIVER_ID, NS_RECEIVER, "{\"type\":\"GET_STATUS\",\"requestId\":1}");
 
             String tid = null;
+            double volLevel = -1.0;
+            boolean volMuted = false;
+            String volType = "attenuation";
+
             for (int i = 0; i < 6; i++) {
                 CastMsg msg = readCastMsg(inp, out);
                 if (NS_RECEIVER.equals(msg.namespace) && msg.payload.contains("RECEIVER_STATUS")) {
-                    tid = findYouTubeTransportId(new JSONObject(msg.payload));
+                    JSONObject rJson = new JSONObject(msg.payload);
+                    JSONObject rStatus = rJson.optJSONObject("status");
+                    if (rStatus != null) {
+                        JSONObject vol = rStatus.optJSONObject("volume");
+                        if (vol != null) {
+                            volLevel = vol.optDouble("level", -1.0);
+                            volMuted = vol.optBoolean("muted", false);
+                            volType = vol.optString("controlType", "attenuation");
+                        }
+                    }
+                    tid = findYouTubeTransportId(rJson);
                     break;
                 }
             }
-            if (tid == null) return null;
+            if (tid == null) {
+                return new MediaStatus("IDLE", "", null, 0.0, volLevel, volMuted, volType);
+            }
 
             writeCastMsg(out, tid, NS_CONNECTION, "{\"type\":\"CONNECT\"}");
             writeCastMsg(out, tid, NS_MEDIA, "{\"type\":\"GET_STATUS\",\"requestId\":2}");
@@ -221,7 +247,7 @@ public final class CastAndTvEngine {
                 if (NS_MEDIA.equals(msg.namespace) && msg.payload.contains("MEDIA_STATUS")) {
                     JSONArray arr = new JSONObject(msg.payload).optJSONArray("status");
                     JSONObject st = arr != null ? arr.optJSONObject(0) : null;
-                    if (st == null) return null;
+                    if (st == null) return new MediaStatus("IDLE", "", null, 0.0, volLevel, volMuted, volType);
                     String pState = st.optString("playerState", "IDLE");
                     JSONObject media = st.optJSONObject("media");
                     String cid = media != null ? media.optString("contentId", "") : "";
@@ -229,10 +255,52 @@ public final class CastAndTvEngine {
                     JSONObject meta = media != null ? media.optJSONObject("metadata") : null;
                     String title = meta != null ? meta.optString("title", "") : "";
                     double pos = st.optDouble("currentTime", 0.0);
-                    return new MediaStatus(pState, title, cid, pos);
+                    return new MediaStatus(pState, title, cid, pos, volLevel, volMuted, volType);
                 }
             }
-            return null;
+            return new MediaStatus("IDLE", "", null, 0.0, volLevel, volMuted, volType);
+        }
+    }
+
+    public double setCastVolume(String host, int port, double level) throws Exception {
+        double clamped = Math.max(0.0, Math.min(1.0, level));
+        try (SSLSocket sock = openCastSocket(host, port, 5000)) {
+            DataInputStream inp = new DataInputStream(sock.getInputStream());
+            DataOutputStream out = new DataOutputStream(sock.getOutputStream());
+            writeCastMsg(out, RECEIVER_ID, NS_CONNECTION, "{\"type\":\"CONNECT\"}");
+            String payload = String.format(Locale.US,
+                    "{\"type\":\"SET_VOLUME\",\"volume\":{\"level\":%.2f},\"requestId\":10}", clamped);
+            writeCastMsg(out, RECEIVER_ID, NS_RECEIVER, payload);
+            for (int i = 0; i < 4; i++) {
+                CastMsg msg = readCastMsg(inp, out);
+                if (NS_RECEIVER.equals(msg.namespace) && msg.payload.contains("RECEIVER_STATUS")) {
+                    JSONObject st = new JSONObject(msg.payload).optJSONObject("status");
+                    JSONObject vol = st != null ? st.optJSONObject("volume") : null;
+                    if (vol != null) return vol.optDouble("level", clamped);
+                    break;
+                }
+            }
+            return clamped;
+        }
+    }
+
+    public boolean setCastMuted(String host, int port, boolean muted) throws Exception {
+        try (SSLSocket sock = openCastSocket(host, port, 5000)) {
+            DataInputStream inp = new DataInputStream(sock.getInputStream());
+            DataOutputStream out = new DataOutputStream(sock.getOutputStream());
+            writeCastMsg(out, RECEIVER_ID, NS_CONNECTION, "{\"type\":\"CONNECT\"}");
+            String payload = "{\"type\":\"SET_VOLUME\",\"volume\":{\"muted\":" + (muted ? "true" : "false") + "},\"requestId\":11}";
+            writeCastMsg(out, RECEIVER_ID, NS_RECEIVER, payload);
+            for (int i = 0; i < 4; i++) {
+                CastMsg msg = readCastMsg(inp, out);
+                if (NS_RECEIVER.equals(msg.namespace) && msg.payload.contains("RECEIVER_STATUS")) {
+                    JSONObject st = new JSONObject(msg.payload).optJSONObject("status");
+                    JSONObject vol = st != null ? st.optJSONObject("volume") : null;
+                    if (vol != null) return vol.optBoolean("muted", muted);
+                    break;
+                }
+            }
+            return muted;
         }
     }
 
@@ -678,6 +746,46 @@ public final class CastAndTvEngine {
                 try { Thread.sleep(250); } catch (InterruptedException ignored) {}
             }
             return expectedState;
+        }
+    }
+
+    public void sendRemoteKey(String deviceId, String host, long keyCode) throws Exception {
+        if (host == null || host.isEmpty()) throw new IOException("TV IP unavailable");
+        if (!isPaired(deviceId)) throw new IOException("TV not paired for remote keys");
+        try (SSLSocket sock = openMutualTls(host, ATV_REMOTE_PORT, 5000, null)) {
+            boolean configured = false;
+            boolean activeSet = false;
+            for (int step = 0; step < 6; step++) {
+                byte[] msg = readAtvFramed(sock);
+                for (CastWire.Field f : CastWire.parseFields(msg)) {
+                    if (f.number == 1) {
+                        byte[] info = CastWire.concat(
+                                CastWire.stringField(1, Build.MODEL),
+                                CastWire.stringField(2, Build.MANUFACTURER),
+                                CastWire.varintField(3, 1),
+                                CastWire.stringField(4, "1"),
+                                CastWire.stringField(5, "com.stas.castremote"),
+                                CastWire.stringField(6, "2.6")
+                        );
+                        byte[] cfg = CastWire.concat(CastWire.varintField(1, 622), CastWire.bytesField(2, info));
+                        writeAtvFramed(sock, CastWire.bytesField(1, cfg));
+                        configured = true;
+                    } else if (f.number == 2) {
+                        writeAtvFramed(sock, CastWire.bytesField(2, CastWire.varintField(1, 622)));
+                        activeSet = true;
+                    } else if (f.number == 8 && f.isBytes && f.bytes != null) {
+                        long val1 = 0L;
+                        for (CastWire.Field pf : CastWire.parseFields(f.bytes)) {
+                            if (pf.number == 1 && !pf.isBytes) { val1 = pf.varint; break; }
+                        }
+                        writeAtvFramed(sock, CastWire.bytesField(9, CastWire.varintField(1, val1)));
+                    }
+                }
+                if (configured && activeSet) break;
+            }
+            byte[] inject = CastWire.concat(CastWire.varintField(1, keyCode), CastWire.varintField(2, 3));
+            writeAtvFramed(sock, CastWire.bytesField(10, inject));
+            try { Thread.sleep(150); } catch (InterruptedException ignored) {}
         }
     }
 

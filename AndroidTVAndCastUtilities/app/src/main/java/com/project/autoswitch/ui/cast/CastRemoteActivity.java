@@ -1,8 +1,8 @@
 /**
  * @file CastRemoteActivity.java
- * @summary Phone & Google TV Cast Remote screen with sticky top header, persistent network devices, merged Control & Mirror menu, and live SwitchCompat power switches.
- * @description Keeps the title bar fixed above the ScrollView while scrolling, renders uniform 2-per-line gradient control squares with real SwitchCompat toggles synced to Google Home OnOff state, and persists devices in SharedPreferences.
- * @testing Compiled and lint-checked via Gradle assembleRelease (v2.5).
+ * @summary Phone & Google TV Cast Remote screen with device-type icon badges, live volume control where applicable, sticky header, persistent devices, and SwitchCompat power toggles.
+ * @description Classifies TVs, Projectors, Speakers, Displays, and Phones from mDNS metadata, exposes SeekBar + 2-up Vol -/+ controls via Cast v2 SET_VOLUME (with ATV Remote keycode fallback), and syncs Google Home OnOff power states.
+ * @testing Compiled and lint-checked via Gradle assembleRelease (v2.6).
  */
 package com.project.autoswitch.ui.cast;
 
@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.PorterDuff;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -30,6 +31,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
@@ -79,12 +81,15 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     // Uniform button geometry
     private static final int BTN_RADIUS_DP = 12;
-    private static final int CONTROL_SQUARE_HEIGHT_DP = 56;
-    private static final int HEADER_PILL_HEIGHT_DP = 36;
+    private static final int CONTROL_SQUARE_HEIGHT_DP = 54;
+    private static final int HEADER_PILL_HEIGHT_DP = 34;
+
+    private enum DeviceKind { TV, PROJECTOR, SPEAKER, DISPLAY, PHONE }
 
     private static final class DeviceItem {
         final String id;
         final String name;
+        String model;
         String state;
         String title;
         String contentId;
@@ -93,16 +98,23 @@ public class CastRemoteActivity extends AppCompatActivity {
         final String host;
         final int port;
         boolean powerOn;
+        double volumeLevel; // 0.0 .. 1.0 (-1 if not fetched yet)
+        boolean isMuted;
+        String volumeControlType; // "attenuation", "master", or "fixed"
 
-        DeviceItem(String id, String name, String state, String title, boolean isPhone, String host, int port) {
+        DeviceItem(String id, String name, String model, String state, String title, boolean isPhone, String host, int port) {
             this.id = id;
             this.name = name;
+            this.model = model != null ? model : "";
             this.state = state;
             this.title = title;
             this.isPhone = isPhone;
             this.host = host;
             this.port = port;
             this.powerOn = true;
+            this.volumeLevel = 0.50;
+            this.isMuted = false;
+            this.volumeControlType = "attenuation";
         }
     }
 
@@ -126,7 +138,6 @@ public class CastRemoteActivity extends AppCompatActivity {
     private EditText linkInput;
     private LinearLayout receiveSwitchContainer;
     private SwitchCompat receiveSwitch;
-    private boolean updatingReceiveSwitch = false;
     private LinearLayout devicesContainer;
 
     @Override
@@ -172,6 +183,73 @@ public class CastRemoteActivity extends AppCompatActivity {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
+    // MARK: - Device Type Detection & Icon Badges
+
+    private DeviceKind classifyDevice(DeviceItem d) {
+        if (d.isPhone) return DeviceKind.PHONE;
+        String combined = (d.name + " " + d.model).toLowerCase(Locale.US);
+        if (combined.contains("projector") || combined.contains("fengmi") || combined.contains("formovie")
+                || combined.contains("xgimi") || combined.contains("nebula") || combined.contains("epson")
+                || combined.contains("benq") || combined.contains("laser")) {
+            return DeviceKind.PROJECTOR;
+        }
+        if (combined.contains("nest hub") || combined.contains("home hub") || combined.contains("smart display")) {
+            return DeviceKind.DISPLAY;
+        }
+        if (combined.contains("mini") || combined.contains("audio") || combined.contains("speaker")
+                || combined.contains("soundbar") || combined.contains("google home") || combined.endsWith("group")) {
+            return DeviceKind.SPEAKER;
+        }
+        return DeviceKind.TV;
+    }
+
+    private String iconGlyphForKind(DeviceKind kind) {
+        switch (kind) {
+            case PROJECTOR: return "\uD83D\uDCFD\uFE0F"; // 📽️ Projector
+            case SPEAKER:   return "\uD83D\uDD0A";       // 🔊 Speaker / Audio
+            case DISPLAY:   return "\uD83D\uDDA5\uFE0F"; // 🖥️ Smart Display
+            case PHONE:     return "\uD83D\uDCF1";       // 📱 Phone / Tablet
+            case TV:
+            default:        return "\uD83D\uDCFA";       // 📺 TV / Google TV
+        }
+    }
+
+    private String labelForKind(DeviceItem d, DeviceKind kind) {
+        if (d.model != null && !d.model.isEmpty() && !d.isPhone) {
+            return d.model;
+        }
+        switch (kind) {
+            case PROJECTOR: return "Projector";
+            case SPEAKER:   return "Speaker";
+            case DISPLAY:   return "Smart Display";
+            case PHONE:     return "Cast Receiver";
+            case TV:
+            default:        return "Google TV / Cast";
+        }
+    }
+
+    private int[] badgeColorsForKind(DeviceKind kind) {
+        switch (kind) {
+            case PROJECTOR: return new int[]{COL_AMBER, COL_VIOLET};
+            case SPEAKER:   return new int[]{COL_EMERALD, COL_CYAN};
+            case DISPLAY:   return new int[]{COL_VIOLET, COL_MAGENTA};
+            case PHONE:     return new int[]{COL_MAGENTA, COL_VIOLET};
+            case TV:
+            default:        return new int[]{COL_CYAN, COL_VIOLET};
+        }
+    }
+
+    private boolean supportsVolumeControl(DeviceItem d) {
+        if (d.isPhone) return false;
+        if ("fixed".equalsIgnoreCase(d.volumeControlType)) {
+            // Fixed HDMI output only supports volume if paired via Android TV Remote keycodes
+            return engine.isPaired(d.id);
+        }
+        return true;
+    }
+
+    // MARK: - UI Factory Helpers
+
     private StateListDrawable gradientButtonBg(int[] colors, int strokeColorNormal) {
         GradientDrawable focused = new GradientDrawable(GradientDrawable.Orientation.TL_BR, colors);
         focused.setCornerRadius(dp(BTN_RADIUS_DP));
@@ -195,7 +273,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(textColor);
-        b.setTextSize(14f);
+        b.setTextSize(13.5f);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setGravity(Gravity.CENTER);
         b.setBackground(gradientButtonBg(gradientColors, strokeNormal));
@@ -216,9 +294,6 @@ public class CastRemoteActivity extends AppCompatActivity {
         sw.setTrackTintList(new ColorStateList(states, new int[]{Color.parseColor("#88FFFFFF"), Color.parseColor("#55000000")}));
     }
 
-    /**
-     * Uniform 56dp gradient control square containing a label + real SwitchCompat switch.
-     */
     private LinearLayout makeSwitchSquare(String titleText, boolean isChecked, SwitchCompat[] outSwitch, Runnable onToggleTap) {
         int[] colors = isChecked
                 ? new int[]{COL_EMERALD, COL_CYAN}
@@ -237,7 +312,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         TextView lbl = new TextView(this);
         lbl.setText(titleText);
         lbl.setTextColor(Color.WHITE);
-        lbl.setTextSize(14f);
+        lbl.setTextSize(13.5f);
         lbl.setTypeface(Typeface.DEFAULT_BOLD);
         lbl.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         box.addView(lbl);
@@ -261,11 +336,11 @@ public class CastRemoteActivity extends AppCompatActivity {
         b.setText(label);
         b.setAllCaps(false);
         b.setTextColor(textColor);
-        b.setTextSize(12f);
+        b.setTextSize(11.5f);
         b.setTypeface(Typeface.DEFAULT_BOLD);
         b.setGravity(Gravity.CENTER);
         b.setBackground(gradientButtonBg(gradientColors, strokeNormal));
-        b.setPadding(dp(12), dp(4), dp(12), dp(4));
+        b.setPadding(dp(10), dp(4), dp(10), dp(4));
         b.setMinHeight(dp(HEADER_PILL_HEIGHT_DP));
         b.setMinimumHeight(dp(HEADER_PILL_HEIGHT_DP));
         b.setFocusable(true);
@@ -294,13 +369,12 @@ public class CastRemoteActivity extends AppCompatActivity {
     }
 
     private View buildUi() {
-        // Root vertical container: Fixed sticky Header on top, ScrollView below!
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
         page.setBackgroundColor(COL_BG);
         page.setFitsSystemWindows(true);
 
-        // Fixed Top Header (never scrolls out of view)
+        // Fixed Sticky Header at Top
         LinearLayout stickyHeader = new LinearLayout(this);
         stickyHeader.setOrientation(LinearLayout.VERTICAL);
         stickyHeader.setBackgroundColor(COL_BG);
@@ -329,7 +403,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         stickyHeader.addView(topBar);
 
         statusView = new TextView(this);
-        statusView.setText("Discovering TVs & phones...");
+        statusView.setText("Discovering TVs, projectors, speakers & phones...");
         statusView.setTextColor(COL_MUTED);
         statusView.setTextSize(12.5f);
         statusView.setPadding(0, dp(8), 0, dp(6));
@@ -343,7 +417,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         page.addView(stickyHeader, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
-        // Scrollable Body below fixed header
+        // Scrollable Body
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         page.addView(scroll, new LinearLayout.LayoutParams(
@@ -354,7 +428,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         root.setPadding(dp(18), dp(14), dp(18), dp(32));
         scroll.addView(root);
 
-        // Merged Control & Mirror Menu Card (uniform 2-per-line gradient squares)
+        // Merged Control & Mirror Menu Card
         LinearLayout menuCard = new LinearLayout(this);
         menuCard.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable menuBg = new GradientDrawable(
@@ -383,7 +457,6 @@ public class CastRemoteActivity extends AppCompatActivity {
         linkInput.setFocusable(true);
         menuCard.addView(linkInput);
 
-        // Row 1: Mirror All | Play on Pinned
         Button btnMirrorAll = makeControlSquare("Mirror All", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
         btnMirrorAll.setOnClickListener(v -> mirrorTargets(null));
 
@@ -391,7 +464,6 @@ public class CastRemoteActivity extends AppCompatActivity {
         btnPlayPinned.setOnClickListener(v -> playOnPinnedDevices());
         menuCard.addView(makeTwoUpRow(btnMirrorAll, btnPlayPinned, 10));
 
-        // Row 2: Refresh | Stop All
         Button btnRefresh = makeControlSquare("Refresh", new int[]{COL_SLATE_TOP, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
         btnRefresh.setOnClickListener(v -> refreshDevices());
 
@@ -399,7 +471,6 @@ public class CastRemoteActivity extends AppCompatActivity {
         btnStopAll.setOnClickListener(v -> stopAllDevices());
         menuCard.addView(makeTwoUpRow(btnRefresh, btnStopAll, 8));
 
-        // Row 3: Receive Switch | Power Off All
         SwitchCompat[] recSwOut = new SwitchCompat[1];
         receiveSwitchContainer = makeSwitchSquare("Receive", isReceiving, recSwOut, this::toggleReceiving);
         receiveSwitch = recSwOut[0];
@@ -421,6 +492,8 @@ public class CastRemoteActivity extends AppCompatActivity {
         return page;
     }
 
+    // MARK: - Persistence
+
     private void loadSavedDevices() {
         try {
             String raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_SAVED_DEVICES, null);
@@ -431,15 +504,19 @@ public class CastRemoteActivity extends AppCompatActivity {
                 if (o == null) continue;
                 String id = o.optString("id", "");
                 String name = o.optString("name", "");
+                String model = o.optString("model", "");
                 String host = o.optString("host", "");
                 int port = o.optInt("port", 8009);
                 boolean isPhone = o.optBoolean("isPhone", false);
                 if (id.isEmpty() || name.isEmpty() || host.isEmpty()) continue;
                 DeviceItem item = new DeviceItem(
-                        id, name, isPhone ? "PHONE (SAVED)" : "SAVED",
+                        id, name, model, isPhone ? "SAVED" : "SAVED",
                         isPhone ? "Cast Receiver" : "",
                         isPhone, host, port);
                 item.powerOn = o.optBoolean("powerOn", true);
+                item.volumeLevel = o.optDouble("volumeLevel", 0.50);
+                item.isMuted = o.optBoolean("isMuted", false);
+                item.volumeControlType = o.optString("volumeControlType", "attenuation");
                 if (isPhone) {
                     phoneDevices.putIfAbsent(id, item);
                 } else {
@@ -459,10 +536,14 @@ public class CastRemoteActivity extends AppCompatActivity {
                 JSONObject o = new JSONObject();
                 o.put("id", d.id);
                 o.put("name", d.name);
+                o.put("model", d.model != null ? d.model : "");
                 o.put("host", d.host);
                 o.put("port", d.port);
                 o.put("isPhone", d.isPhone);
                 o.put("powerOn", d.powerOn);
+                o.put("volumeLevel", d.volumeLevel);
+                o.put("isMuted", d.isMuted);
+                o.put("volumeControlType", d.volumeControlType);
                 arr.put(o);
             }
             getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -476,7 +557,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         runSafeUi(() -> statusView.setText(msg));
     }
 
-    // MARK: - Discovery & Live Power State Sync
+    // MARK: - Discovery & Live Power/Volume Sync
 
     private void syncGoogleHomePowerStates() {
         GoogleHomePowerBridge.queryPowerStates(this, statesByLowerName -> {
@@ -506,7 +587,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private void refreshDevices() {
         stopDiscovery();
-        setStatus("Discovering Chromecasts, Google TVs, & peer devices...");
+        setStatus("Discovering TVs, projectors, speakers, & peer devices...");
         acquireMulticastLock();
         syncGoogleHomePowerStates();
 
@@ -517,15 +598,22 @@ public class CastRemoteActivity extends AppCompatActivity {
             Map<String, byte[]> attrs = info.getAttributes();
             String friendly = attrStr(attrs, "fn");
             if (friendly == null || friendly.isEmpty()) friendly = info.getServiceName();
+            String model = attrStr(attrs, "md");
             String uid = attrStr(attrs, "id");
             if (uid == null || uid.isEmpty()) uid = info.getServiceName();
             int port = info.getPort() > 0 ? info.getPort() : 8009;
             DeviceItem existing = castDevices.get(uid);
             DeviceItem item = new DeviceItem(uid, friendly,
+                    (model != null && !model.isEmpty()) ? model : (existing != null ? existing.model : ""),
                     (existing != null && !"SAVED".equals(existing.state)) ? existing.state : "IDLE",
                     existing != null ? existing.title : "",
                     false, host, port);
-            if (existing != null) item.powerOn = existing.powerOn;
+            if (existing != null) {
+                item.powerOn = existing.powerOn;
+                item.volumeLevel = existing.volumeLevel;
+                item.isMuted = existing.isMuted;
+                item.volumeControlType = existing.volumeControlType;
+            }
             castDevices.put(uid, item);
             saveDevicesToPrefs();
             runSafeUi(this::renderDevices);
@@ -538,7 +626,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             String name = info.getServiceName();
             String id = "phone:" + name;
             int port = info.getPort() > 0 ? info.getPort() : RECEIVER_PORT;
-            phoneDevices.put(id, new DeviceItem(id, name, "PHONE", "Cast Receiver", true, host, port));
+            phoneDevices.put(id, new DeviceItem(id, name, "Cast Receiver", "ONLINE", "", true, host, port));
             saveDevicesToPrefs();
             runSafeUi(this::renderDevices);
         });
@@ -554,18 +642,24 @@ public class CastRemoteActivity extends AppCompatActivity {
                         tv.title = st.title;
                         tv.contentId = st.contentId;
                         tv.position = st.position;
+                        if (st.volumeLevel >= 0.0) tv.volumeLevel = st.volumeLevel;
+                        tv.isMuted = st.isMuted;
+                        if (st.volumeControlType != null && !st.volumeControlType.isEmpty()) {
+                            tv.volumeControlType = st.volumeControlType;
+                        }
                     }
                 } catch (Exception ignored) {}
             }
+            saveDevicesToPrefs();
             syncGoogleHomePowerStates();
             runSafeUi(() -> {
                 renderDevices();
                 int tvs = castDevices.size();
                 int phones = phoneDevices.size();
                 StringBuilder sb = new StringBuilder("Ready · ");
-                if (tvs > 0) sb.append(tvs).append(" TVs");
+                if (tvs > 0) sb.append(tvs).append(" Cast device(s)");
                 if (tvs > 0 && phones > 0) sb.append(" & ");
-                if (phones > 0) sb.append(phones).append(" devices");
+                if (phones > 0) sb.append(phones).append(" receiver(s)");
                 if (tvs == 0 && phones == 0) sb.append("0 devices");
                 setStatus(sb.toString());
             });
@@ -622,7 +716,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         return val != null ? new String(val, StandardCharsets.UTF_8) : null;
     }
 
-    // MARK: - Pinning & Uniform 2-per-Line Card Rendering with Real SwitchCompat
+    // MARK: - Card Rendering (Device Type Icons + 2-up Squares + Volume Controls)
 
     private void togglePin(DeviceItem dev) {
         if (pinnedIds.contains(dev.id)) {
@@ -657,6 +751,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         for (DeviceItem dev : all) {
             boolean isPinned = pinnedIds.contains(dev.id);
             boolean isPaired = !dev.isPhone && engine.isPaired(dev.id);
+            DeviceKind kind = classifyDevice(dev);
 
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
@@ -672,18 +767,41 @@ public class CastRemoteActivity extends AppCompatActivity {
             cardLp.bottomMargin = dp(12);
             card.setLayoutParams(cardLp);
 
+            // Card Header: [Device Type Icon Badge] + [Name & Type/State] + [Pair] + [Pin]
             LinearLayout header = new LinearLayout(this);
             header.setOrientation(LinearLayout.HORIZONTAL);
             header.setGravity(Gravity.CENTER_VERTICAL);
 
-            TextView label = new TextView(this);
-            String titleSuffix = (dev.title != null && !dev.title.isEmpty()) ? " · " + dev.title : "";
-            label.setText(dev.name + " · " + dev.state + titleSuffix);
-            label.setTextColor("PLAYING".equals(dev.state) ? COL_NEON_CYAN : (dev.isPhone ? COL_MAGENTA : COL_TEXT));
-            label.setTextSize(15f);
-            label.setTypeface(Typeface.DEFAULT_BOLD);
-            label.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-            header.addView(label);
+            TextView iconBadge = new TextView(this);
+            iconBadge.setText(iconGlyphForKind(kind));
+            iconBadge.setTextSize(18f);
+            iconBadge.setGravity(Gravity.CENTER);
+            GradientDrawable badgeBg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, badgeColorsForKind(kind));
+            badgeBg.setCornerRadius(dp(10));
+            iconBadge.setBackground(badgeBg);
+            LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dp(40), dp(40));
+            badgeLp.rightMargin = dp(10);
+            iconBadge.setLayoutParams(badgeLp);
+            header.addView(iconBadge);
+
+            LinearLayout titleCol = new LinearLayout(this);
+            titleCol.setOrientation(LinearLayout.VERTICAL);
+            titleCol.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+            TextView nameView = new TextView(this);
+            nameView.setText(dev.name);
+            nameView.setTextColor("PLAYING".equals(dev.state) ? COL_NEON_CYAN : (dev.isPhone ? COL_MAGENTA : COL_TEXT));
+            nameView.setTextSize(15f);
+            nameView.setTypeface(Typeface.DEFAULT_BOLD);
+            titleCol.addView(nameView);
+
+            TextView subView = new TextView(this);
+            String mediaExtra = (dev.title != null && !dev.title.isEmpty()) ? " · " + dev.title : "";
+            subView.setText(labelForKind(dev, kind) + " · " + dev.state + mediaExtra);
+            subView.setTextColor(COL_MUTED);
+            subView.setTextSize(11.5f);
+            titleCol.addView(subView);
+            header.addView(titleCol);
 
             if (!dev.isPhone) {
                 Button btnPair = makeHeaderPill(
@@ -718,7 +836,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             btnMirror.setOnClickListener(v -> mirrorTargets(dev));
             card.addView(makeTwoUpRow(btnPlay, btnMirror, 12));
 
-            // Row 2 for TVs (2 uniform gradient squares): Live Power SwitchCompat | Stop Cast
+            // Row 2 for Cast Devices (2 uniform gradient squares): Live Power SwitchCompat | Stop Cast
             if (!dev.isPhone) {
                 LinearLayout powerSwitchBox = makeSwitchSquare(
                         dev.powerOn ? "Power · ON" : "Power · OFF",
@@ -731,8 +849,140 @@ public class CastRemoteActivity extends AppCompatActivity {
                 card.addView(makeTwoUpRow(powerSwitchBox, btnStop, 8));
             }
 
+            // Row 3: Volume Control (only where applicable)
+            if (supportsVolumeControl(dev)) {
+                card.addView(buildVolumeSection(dev));
+            }
+
             devicesContainer.addView(card);
         }
+    }
+
+    private View buildVolumeSection(DeviceItem dev) {
+        LinearLayout volWrap = new LinearLayout(this);
+        volWrap.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams wrapLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        wrapLp.topMargin = dp(8);
+        volWrap.setLayoutParams(wrapLp);
+
+        boolean isFixed = "fixed".equalsIgnoreCase(dev.volumeControlType);
+        int pct = (int) Math.round(Math.max(0.0, Math.min(1.0, dev.volumeLevel)) * 100.0);
+
+        if (!isFixed) {
+            // Interactive Volume Slider bar + % readout + Mute pill
+            LinearLayout sliderRow = new LinearLayout(this);
+            sliderRow.setOrientation(LinearLayout.HORIZONTAL);
+            sliderRow.setGravity(Gravity.CENTER_VERTICAL);
+            sliderRow.setBackground(gradientButtonBg(new int[]{COL_BG, COL_SLATE_BOT}, COL_SLATE_TOP));
+            sliderRow.setPadding(dp(12), dp(6), dp(8), dp(6));
+
+            TextView volLabel = new TextView(this);
+            volLabel.setText(dev.isMuted ? "\uD83D\uDD07 Muted" : ("\uD83D\uDD0A " + pct + "%"));
+            volLabel.setTextColor(dev.isMuted ? COL_AMBER : COL_TEXT);
+            volLabel.setTextSize(12.5f);
+            volLabel.setTypeface(Typeface.DEFAULT_BOLD);
+            volLabel.setMinWidth(dp(64));
+            sliderRow.addView(volLabel);
+
+            SeekBar seek = new SeekBar(this);
+            seek.setMax(100);
+            seek.setProgress(pct);
+            seek.getProgressDrawable().setColorFilter(COL_CYAN, PorterDuff.Mode.SRC_IN);
+            seek.getThumb().setColorFilter(COL_NEON_CYAN, PorterDuff.Mode.SRC_IN);
+            seek.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                    if (fromUser) {
+                        volLabel.setText("\uD83D\uDD0A " + progress + "%");
+                    }
+                }
+                @Override public void onStartTrackingTouch(SeekBar sb) {}
+                @Override
+                public void onStopTrackingTouch(SeekBar sb) {
+                    setDeviceVolume(dev, sb.getProgress() / 100.0);
+                }
+            });
+            sliderRow.addView(seek);
+
+            Button btnMute = makeHeaderPill(
+                    dev.isMuted ? "Unmute" : "Mute",
+                    dev.isMuted ? new int[]{COL_AMBER, COL_CRIMSON} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                    Color.WHITE,
+                    Color.TRANSPARENT);
+            btnMute.setOnClickListener(v -> toggleDeviceMute(dev));
+            sliderRow.addView(btnMute);
+
+            volWrap.addView(sliderRow);
+        }
+
+        // Uniform 2-per-line gradient Volume Step Squares (great for both Phone thumbs & Google TV D-pad!)
+        Button btnVolDown = makeControlSquare("\uD83D\uDD09  Vol −", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+        btnVolDown.setOnClickListener(v -> stepDeviceVolume(dev, -0.10));
+
+        Button btnVolUp = makeControlSquare("\uD83D\uDD0A  Vol +", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
+        btnVolUp.setOnClickListener(v -> stepDeviceVolume(dev, +0.10));
+
+        volWrap.addView(makeTwoUpRow(btnVolDown, btnVolUp, isFixed ? 0 : 8));
+        return volWrap;
+    }
+
+    // MARK: - Volume Actions
+
+    private void setDeviceVolume(DeviceItem dev, double targetLevel) {
+        final double clamped = Math.max(0.0, Math.min(1.0, targetLevel));
+        dev.volumeLevel = clamped;
+        dev.isMuted = false;
+        int pct = (int) Math.round(clamped * 100);
+        setStatus("Setting " + dev.name + " volume to " + pct + "%...");
+        runSafeBg(() -> {
+            try {
+                double actual = engine.setCastVolume(dev.host, dev.port, clamped);
+                dev.volumeLevel = actual;
+                saveDevicesToPrefs();
+                setStatus(dev.name + " volume: " + Math.round(actual * 100) + "%");
+                runSafeUi(this::renderDevices);
+            } catch (Exception e) {
+                setStatus("Volume failed on " + dev.name + ": " + e.getMessage());
+            }
+        });
+    }
+
+    private void stepDeviceVolume(DeviceItem dev, double delta) {
+        if ("fixed".equalsIgnoreCase(dev.volumeControlType) && engine.isPaired(dev.id)) {
+            long key = delta > 0 ? CastAndTvEngine.KEYCODE_VOLUME_UP : CastAndTvEngine.KEYCODE_VOLUME_DOWN;
+            setStatus((delta > 0 ? "Volume + " : "Volume − ") + dev.name + "...");
+            runSafeBg(() -> {
+                try {
+                    engine.sendRemoteKey(dev.id, dev.host, key);
+                    setStatus("Sent volume step to " + dev.name + ".");
+                } catch (Exception e) {
+                    setStatus("Volume key failed: " + e.getMessage());
+                }
+            });
+            return;
+        }
+        setDeviceVolume(dev, dev.volumeLevel + delta);
+    }
+
+    private void toggleDeviceMute(DeviceItem dev) {
+        final boolean targetMute = !dev.isMuted;
+        dev.isMuted = targetMute;
+        renderDevices();
+        setStatus((targetMute ? "Muting " : "Unmuting ") + dev.name + "...");
+        runSafeBg(() -> {
+            try {
+                dev.isMuted = engine.setCastMuted(dev.host, dev.port, targetMute);
+                saveDevicesToPrefs();
+                setStatus((dev.isMuted ? "Muted " : "Unmuted ") + dev.name + ".");
+                runSafeUi(this::renderDevices);
+            } catch (Exception e) {
+                dev.isMuted = !targetMute;
+                runSafeUi(this::renderDevices);
+                setStatus("Mute failed: " + e.getMessage());
+            }
+        });
     }
 
     // MARK: - Cast / Mirror / Stop / Power Switch Actions
@@ -899,7 +1149,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             setStatus("No TVs found.");
             return;
         }
-        setStatus("Turning off " + tvs.size() + " TV(s) via Google Home...");
+        setStatus("Turning off " + tvs.size() + " device(s) via Google Home...");
         for (DeviceItem tv : tvs) {
             GoogleHomePowerBridge.setPower(this, tv.name, false, (success, msg) -> {
                 if (success) {
@@ -915,7 +1165,6 @@ public class CastRemoteActivity extends AppCompatActivity {
     private void togglePowerDevice(DeviceItem dev) {
         final boolean previousOn = dev.powerOn;
         final boolean targetOn = !previousOn;
-        // Optimistically flip visual switch immediately so UI feels instant, revert on error.
         dev.powerOn = targetOn;
         renderDevices();
         setStatus((targetOn ? "Turning ON " : "Turning OFF ") + dev.name + "...");
@@ -1044,9 +1293,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private void updateReceiveSwitchUi() {
         runSafeUi(() -> {
-            if (receiveSwitch != null) {
-                receiveSwitch.setChecked(isReceiving);
-            }
+            if (receiveSwitch != null) receiveSwitch.setChecked(isReceiving);
             if (receiveSwitchContainer != null) {
                 int[] cols = isReceiving ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT};
                 receiveSwitchContainer.setBackground(gradientButtonBg(cols, isReceiving ? Color.TRANSPARENT : COL_SLATE_TOP));
