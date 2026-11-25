@@ -177,7 +177,8 @@ public class CastRemoteActivity extends AppCompatActivity {
         loadLinkedHomeKeys();
         loadSavedDevices();
         renderDevices();
-        refreshDevices(false);
+        // Automatically prompt to authorize/reauthorize Google Home if not yet connected or 0 devices synced!
+        refreshDevices(GoogleHomePowerBridge.shouldAutoPromptThisSession());
     }
 
     @Override
@@ -661,7 +662,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         topBar.addView(btnBack);
 
         TextView title = new TextView(this);
-        title.setText("CAST & HOME");
+        title.setText("Cast Device Controls");
         title.setTextColor(COL_NEON_CYAN);
         title.setTextSize(19.5f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
@@ -915,6 +916,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             if (snapshots == null || snapshots.isEmpty()) {
                 if (statusNote != null && (promptIfNeeded || forceReconsent)) {
                     setStatus(statusNote);
+                    runSafeUi(() -> showReauthorizeHomeDialog(statusNote));
                 }
                 return;
             }
@@ -1934,6 +1936,39 @@ public class CastRemoteActivity extends AppCompatActivity {
         });
     }
 
+    private void showReauthorizeHomeDialog(String reason) {
+        if (isFinishing() || isDestroyed()) return;
+        String pkg = getPackageName();
+        boolean isOauthCancelled = reason != null && reason.toUpperCase(Locale.US).contains("CANCEL");
+        StringBuilder msg = new StringBuilder();
+        msg.append("Google Home smart devices need authorization on this app/network.\n\nStatus: ")
+           .append(reason != null ? reason : "Not authorized");
+        if (isOauthCancelled) {
+            msg.append("\n\nNote: If Google Home closed without showing the device picker, ensure package '")
+               .append(pkg)
+               .append("' + SHA-1 'BC:91:2C:95:23:0A:71:41:65:30:22:79:D3:A0:9D:E0:38:BC:C3:99' is added as an Android OAuth Client in Google Cloud Console.\n\nLocal Wi-Fi Cast, Volume, HDMI Wake, and TV PIN Pairing still work on any Wi-Fi network.");
+        } else {
+            msg.append("\n\nTap 'Reauthorize Now' to sign in and grant access to your Google Home rooms and devices.");
+        }
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("Reauthorize Google Home")
+                .setMessage(msg.toString())
+                .setPositiveButton("Reauthorize Now", (d, w) -> {
+                    setStatus("Launching Google Home authorization...");
+                    syncGoogleHomeDevices(true, true);
+                })
+                .setNegativeButton("Use Local Wi-Fi", null);
+        if (isOauthCancelled) {
+            b.setNeutralButton("Copy OAuth SHA-1", (d, w) -> {
+                GoogleHomePowerBridge.copyToClipboard(this, "OAuth Client",
+                        "Package: " + pkg + "\nSHA-1: BC:91:2C:95:23:0A:71:41:65:30:22:79:D3:A0:9D:E0:38:BC:C3:99");
+                Toast.makeText(this, "Copied Package + SHA-1", Toast.LENGTH_SHORT).show();
+            });
+        }
+        b.show();
+    }
+
     private void showPowerLinkOrPairDialog(DeviceItem castDev, String homeFailReason) {
         List<GoogleHomePowerBridge.HomeDeviceSnapshot> candidates = GoogleHomePowerBridge.getControllableCandidates();
         List<String> labels = new ArrayList<>();
@@ -1941,23 +1976,28 @@ public class CastRemoteActivity extends AppCompatActivity {
             labels.add("\uD83D\uDCFA  " + snap.name + "  (" + snap.typeSummary + ")");
         }
         final int pairOptionIdx = labels.size();
-        labels.add("\uD83D\uDD11  Pair directly via TV Screen PIN (Android TV Remote)");
+        labels.add("\uD83D\uDD11  Pair TV Directly Over Wi-Fi (6-Digit TV PIN)");
+        final int reauthOptionIdx = labels.size();
+        labels.add("\uD83C\uDFE0  Authorize / Reauthorize Google Home Devices");
 
-        setStatus("Select which Google Home TV powers off '" + castDev.name + "'...");
+        setStatus("Choose how to power off '" + castDev.name + "'...");
 
         new AlertDialog.Builder(this)
                 .setTitle("Power Off '" + castDev.name + "'")
                 .setItems(labels.toArray(new String[0]), (dialog, which) -> {
                     if (which == pairOptionIdx) {
-                        setStatus("Connecting to " + castDev.name + " for TV PIN pairing...");
+                        setStatus("Connecting to " + castDev.name + " over Wi-Fi for TV PIN pairing...");
                         runSafeBg(() -> {
                             try {
                                 engine.beginPairing(castDev.id, castDev.host);
                                 runSafeUi(() -> showPinDialog(castDev, true));
                             } catch (Exception e) {
-                                setStatus("TV PIN pairing unavailable (" + e.getMessage() + "). Link via Google Home instead.");
+                                setStatus("TV PIN pairing unavailable (" + e.getMessage() + "). Try Reauthorize Google Home.");
                             }
                         });
+                    } else if (which == reauthOptionIdx) {
+                        setStatus("Reauthorizing Google Home...");
+                        syncGoogleHomeDevices(true, true);
                     } else if (which >= 0 && which < candidates.size()) {
                         GoogleHomePowerBridge.HomeDeviceSnapshot chosen = candidates.get(which);
                         saveLinkedHomeKey(castDev, chosen.key);

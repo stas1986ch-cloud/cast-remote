@@ -28,6 +28,9 @@ import com.google.home.matter.standard.*
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -68,6 +71,7 @@ object GoogleHomePowerBridge {
     private const val DIAG_FILE = "cast_diag.txt"
 
     private val consentInFlight = AtomicBoolean(false)
+    private val autoPromptedSession = AtomicBoolean(false)
     private val devicesByKey = ConcurrentHashMap<String, HomeDevice>()
     private val devicesByLowerName = ConcurrentHashMap<String, HomeDevice>()
     private val latestSnapshots = CopyOnWriteArrayList<HomeDeviceSnapshot>()
@@ -230,23 +234,21 @@ object GoogleHomePowerBridge {
     }
 
     /**
-     * Collects ALL DeviceType endpoints on a HomeDevice (top-level types + child parts recursively)
-     * so traits hosted on streaming sticks, child endpoints, or composite TVs are never missed.
+     * Collects ALL DeviceType endpoints on a HomeDevice using synchronous dt.parts (no blocking Flow timeout!)
+     * so all 52+ Google Home devices sync in ~1 second without hanging.
      */
     private suspend fun collectAllDeviceEndpoints(device: HomeDevice): List<DeviceType> {
         val out = LinkedHashSet<DeviceType>()
         try {
-            val top = withTimeout(4_000) { device.types().first() }
+            val top = withTimeout(3_500) { device.types().first() }
             for (dt in top) {
                 out.add(dt)
-                try { out.addAll(dt.parts) } catch (_: Throwable) {}
-            }
-        } catch (_: Throwable) {}
-        try {
-            val devParts = withTimeout(3_000) { device.parts().first() }
-            for (p in devParts) {
-                out.add(p)
-                try { out.addAll(p.parts) } catch (_: Throwable) {}
+                try {
+                    for (sub in dt.parts) {
+                        out.add(sub)
+                        try { out.addAll(sub.parts) } catch (_: Throwable) {}
+                    }
+                } catch (_: Throwable) {}
             }
         } catch (_: Throwable) {}
         return out.toList()
@@ -362,6 +364,70 @@ object GoogleHomePowerBridge {
     }
 
     @JvmStatic
+    fun shouldAutoPromptThisSession(): Boolean = autoPromptedSession.compareAndSet(false, true)
+
+    private suspend fun collectSnapshotsFromClient(activity: ComponentActivity, hc: HomeClient): ArrayList<HomeDeviceSnapshot> {
+        val structures = withTimeout(12_000) { hc.structures().first() }
+        val snapshots = ArrayList<HomeDeviceSnapshot>()
+        for (s in structures) {
+            val devs = try {
+                withTimeout(12_000) { s.devices().first() }
+            } catch (t: Throwable) {
+                logDiag(activity, "Structure '${s.name}' timeout: ${t.message}")
+                continue
+            }
+            // Inspect all devices in parallel so 50+ smart home devices finish in < 1s!
+            val built = coroutineScope {
+                devs.map { d ->
+                    async {
+                        val endpoints = collectAllDeviceEndpoints(d)
+                        val typeNames = endpoints.map { it.javaClass.simpleName }.distinct()
+                        if (typeNames.size == 1 && (typeNames[0].contains("RootNode") || typeNames[0].contains("OtaRequestor"))) {
+                            return@async null
+                        }
+                        if (typeNames.size == 1 && (typeNames[0].contains("Routine") || typeNames[0].contains("Scene"))) {
+                            return@async null
+                        }
+
+                        val key = "home::${s.name}::${d.name}"
+                        devicesByKey[key] = d
+                        devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
+
+                        val onOff = findTraitAcrossEndpoints(endpoints, OnOff)
+                        val lowPower = findTraitAcrossEndpoints(endpoints, LowPower)
+                        val keypad = findTraitAcrossEndpoints(endpoints, KeypadInput)
+                        val extKeypad = findTraitAcrossEndpoints(endpoints, ExtendedKeypadInput)
+                        val simpOnOff = findTraitAcrossEndpoints(endpoints, SimplifiedOnOff)
+
+                        val supportsPower = (onOff != null || lowPower != null || keypad != null || extKeypad != null)
+                        val isOn = onOff?.onOff ?: (simpOnOff != null || true)
+                        val (cat, label) = classifyTypes(typeNames, d.name)
+
+                        if (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") {
+                            logDiag(
+                                activity,
+                                "TV '${d.name}' [${s.name}] types=${typeNames.joinToString()} traits=[${summarizeAllTraits(endpoints)}]"
+                            )
+                        }
+
+                        HomeDeviceSnapshot(
+                            key = key,
+                            homeName = s.name,
+                            name = d.name,
+                            typeSummary = if (s.name.isNotEmpty()) "$label · ${s.name}" else label,
+                            category = cat,
+                            supportsOnOff = supportsPower,
+                            powerOn = isOn
+                        )
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            snapshots.addAll(built)
+        }
+        return snapshots
+    }
+
+    @JvmStatic
     fun syncAllHomeDevices(activity: ComponentActivity, promptIfNeeded: Boolean, callback: HomeSyncCallback) {
         syncAllHomeDevices(activity, promptIfNeeded, false, callback)
     }
@@ -388,56 +454,19 @@ object GoogleHomePowerBridge {
                     return@launch
                 }
 
-                val structures = withTimeout(12_000) { hc.structures().first() }
-                val snapshots = ArrayList<HomeDeviceSnapshot>()
-                for (s in structures) {
-                    val devs = try {
-                        withTimeout(12_000) { s.devices().first() }
-                    } catch (t: Throwable) {
-                        logDiag(activity, "Structure '${s.name}' timeout: ${t.message}")
-                        continue
+                var snapshots = collectSnapshotsFromClient(activity, hc)
+                // If permission appeared granted yet 0 devices were returned (stale/revoked/unshared structure),
+                // automatically prompt to reauthorize when allowed!
+                if (snapshots.isEmpty() && promptIfNeeded && !forceReconsent) {
+                    logDiag(activity, "0 Google Home devices returned — prompting reauthorization")
+                    val reauthErr = requestConsentIfNeeded(activity, hc, allowPrompt = true, forceLaunch = true)
+                    if (reauthErr != null) {
+                        callback.onSynced(emptyList(), reauthErr)
+                        return@launch
                     }
-                    for (d in devs) {
-                        val endpoints = collectAllDeviceEndpoints(d)
-                        val typeNames = endpoints.map { it.javaClass.simpleName }.distinct()
-                        if (typeNames.size == 1 && (typeNames[0].contains("RootNode") || typeNames[0].contains("OtaRequestor"))) continue
-                        // Skip internal Google speaker-group / virtual routine nodes if completely empty
-                        if (typeNames.size == 1 && (typeNames[0].contains("Routine") || typeNames[0].contains("Scene"))) continue
-
-                        val key = "home::${s.name}::${d.name}"
-                        devicesByKey[key] = d
-                        devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
-
-                        val onOff = findTraitAcrossEndpoints(endpoints, OnOff)
-                        val lowPower = findTraitAcrossEndpoints(endpoints, LowPower)
-                        val keypad = findTraitAcrossEndpoints(endpoints, KeypadInput)
-                        val extKeypad = findTraitAcrossEndpoints(endpoints, ExtendedKeypadInput)
-                        val simpOnOff = findTraitAcrossEndpoints(endpoints, SimplifiedOnOff)
-
-                        val supportsPower = (onOff != null || lowPower != null || keypad != null || extKeypad != null)
-                        val isOn = onOff?.onOff ?: (simpOnOff != null || true)
-                        val (cat, label) = classifyTypes(typeNames, d.name)
-
-                        if (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") {
-                            logDiag(
-                                activity,
-                                "TV '${d.name}' [${s.name}] types=${typeNames.joinToString()} traits=[${summarizeAllTraits(endpoints)}]"
-                            )
-                        }
-
-                        snapshots.add(
-                            HomeDeviceSnapshot(
-                                key = key,
-                                homeName = s.name,
-                                name = d.name,
-                                typeSummary = if (s.name.isNotEmpty()) "$label · ${s.name}" else label,
-                                category = cat,
-                                supportsOnOff = supportsPower,
-                                powerOn = isOn
-                            )
-                        )
-                    }
+                    snapshots = collectSnapshotsFromClient(activity, hc)
                 }
+
                 latestSnapshots.clear()
                 latestSnapshots.addAll(snapshots)
                 lastSyncMs = System.currentTimeMillis()

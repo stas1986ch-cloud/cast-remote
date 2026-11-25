@@ -1,3 +1,9 @@
+/**
+ * @file SplashActivity.java
+ * @summary Launch splash screen displaying Google AdMob ad with 5s countdown + skip control and parallel HDMI auto-boot detection.
+ * @description Waits for MobileAds initialization before requesting the MEDIUM_RECTANGLE ad inside measured bounds so ads render reliably on cold start.
+ * @testing Compiled and lint-checked via Gradle assembleRelease (v3.2).
+ */
 package com.project.autoswitch.ui;
 
 import android.content.Context;
@@ -90,9 +96,8 @@ public class SplashActivity extends AppCompatActivity {
     }
 
     private void initAndLoadAdMob() {
-        MobileAds.initialize(this, initializationStatus -> {
-            Log.d(TAG, "MobileAds initialized.");
-        });
+        adContainer.setVisibility(View.INVISIBLE);
+        adContainer.setAlpha(0f);
 
         adView = new AdView(this);
         adView.setAdUnitId(TEST_AD_UNIT_ID);
@@ -121,7 +126,7 @@ public class SplashActivity extends AppCompatActivity {
             }
         });
 
-        // 3. Safety Timeout: If ad doesn't load within 3.5s (e.g. offline/poor Wi-Fi), proceed directly
+        // Safety Timeout: 7.0s so cold WebView + MobileAds startup on a fresh install never skips the ad
         adLoadTimeoutRunnable = new Runnable() {
             @Override
             public void run() {
@@ -129,17 +134,32 @@ public class SplashActivity extends AppCompatActivity {
                 proceedToDestination();
             }
         };
-        handler.postDelayed(adLoadTimeoutRunnable, 3500);
+        handler.postDelayed(adLoadTimeoutRunnable, 7000);
 
-        // Request ad
-        AdRequest adRequest = new AdRequest.Builder().build();
-        adView.loadAd(adRequest);
+        final boolean[] requested = new boolean[]{false};
+        MobileAds.initialize(this, initializationStatus -> {
+            Log.d(TAG, "MobileAds initialized.");
+            handler.post(() -> {
+                if (!requested[0] && !isFinishing() && !isDestroyed() && !hasProceeded) {
+                    requested[0] = true;
+                    adView.loadAd(new AdRequest.Builder().build());
+                }
+            });
+        });
+        // Fallback kick if MobileAds callback is delayed > 1.2s
+        handler.postDelayed(() -> {
+            if (!requested[0] && !isFinishing() && !isDestroyed() && !hasProceeded) {
+                requested[0] = true;
+                adView.loadAd(new AdRequest.Builder().build());
+            }
+        }, 1200);
     }
 
     private void startAdDisplayCycle() {
         if (isFinishing() || isDestroyed() || hasProceeded) return;
 
         adContainer.setVisibility(View.VISIBLE);
+        adContainer.setAlpha(1f);
         adCountdown.setVisibility(View.VISIBLE);
         adCountdown.setText("Ad: 5s");
 

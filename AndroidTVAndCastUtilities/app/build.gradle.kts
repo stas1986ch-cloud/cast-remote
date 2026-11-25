@@ -1,6 +1,6 @@
 /**
  * @file build.gradle.kts
- * @summary Gradle module configuration for Google Screen Control and Cast (v3.1).
+ * @summary Gradle module configuration for Google Screen Control and Cast (v3.2).
  * @description Configures SDK 35, com.screencontrol.cast package identity, Kotlin 2.4.0 stdlib alignment, and Play Services Home 17.1.0 dependencies.
  * @testing Validated via gradlew assembleRelease and lintVitalRelease.
  */
@@ -16,8 +16,8 @@ android {
         applicationId = "com.screencontrol.cast"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "3.1"
+        versionCode = 33
+        versionName = "3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

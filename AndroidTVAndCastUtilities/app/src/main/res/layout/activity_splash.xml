@@ -13,12 +13,12 @@
         android:src="@mipmap/ic_launcher_foreground"
         android:contentDescription="Android Utilities Logo" />
 
-    <!-- Ad Container -->
+    <!-- Ad Container (INVISIBLE instead of GONE while loading so AdView measures real 300x250 bounds) -->
     <FrameLayout
         android:id="@+id/ad_container"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:visibility="gone" />
+        android:visibility="invisible" />
 
     <!-- Top Overlay Bar (Countdown & Skip Button) -->
     <LinearLayout
