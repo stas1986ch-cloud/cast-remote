@@ -203,7 +203,7 @@ object GoogleHomePowerBridge {
     }
 
     @Synchronized
-    private fun getOrCreateClient(context: Context): HomeClient {
+    internal fun getOrCreateClient(context: Context): HomeClient {
         sharedClient?.let { return it }
         val config = HomeConfig(
             coroutineContext = SupervisorJob() + Dispatchers.IO + homeCoroutineHandler,

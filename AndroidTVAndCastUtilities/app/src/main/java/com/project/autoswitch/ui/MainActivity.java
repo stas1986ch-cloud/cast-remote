@@ -16,12 +16,14 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import com.google.android.material.card.MaterialCardView;
 import com.project.autoswitch.ui.cast.CastRemoteActivity;
+import com.project.autoswitch.ui.nest.NestMonitorActivity;
 import java.util.HashSet;
 import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
     private TextView hdmiSubtitle;
     private TextView castSubtitle;
+    private TextView nestSubtitle;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -30,6 +32,7 @@ public class MainActivity extends AppCompatActivity {
 
         hdmiSubtitle = findViewById(R.id.tile_hdmi_subtitle);
         castSubtitle = findViewById(R.id.tile_cast_subtitle);
+        nestSubtitle = findViewById(R.id.tile_nest_subtitle);
 
         GridLayout grid = findViewById(R.id.hub_grid);
         if (grid != null) {
@@ -47,6 +50,11 @@ public class MainActivity extends AppCompatActivity {
         if (castTile != null) {
             castTile.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, CastRemoteActivity.class)));
         }
+
+        MaterialCardView nestTile = findViewById(R.id.tile_nest_monitor);
+        if (nestTile != null) {
+            nestTile.setOnClickListener(v -> startActivity(new Intent(MainActivity.this, NestMonitorActivity.class)));
+        }
     }
 
     @Override
@@ -54,6 +62,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         updateArmedStatus();
         updateCastSummary();
+        updateNestSummary();
     }
 
     private void updateArmedStatus() {
@@ -84,6 +93,21 @@ public class MainActivity extends AppCompatActivity {
             castSubtitle.setText(pinCount + " Pinned · " + pairCount + " Paired TVs");
         } else {
             castSubtitle.setText("Pin, Mirror & TV Power");
+        }
+    }
+
+    private void updateNestSummary() {
+        if (nestSubtitle == null) return;
+        SharedPreferences prefs = getSharedPreferences("NestMonitorPrefs", Context.MODE_PRIVATE);
+        boolean enabled = prefs.getBoolean("monitor_enabled", false);
+        float delta = prefs.getFloat("delta_degrees_f", 2.0f);
+        float minT = prefs.getFloat("min_temp_f", 62.0f);
+        if (enabled) {
+            nestSubtitle.setText(String.format("ARMED · ±%.0f°F / ≤%.0f°F", delta, minT));
+            nestSubtitle.setTextColor(Color.parseColor("#10B981"));
+        } else {
+            nestSubtitle.setText("Temp Alerts & Reset");
+            nestSubtitle.setTextColor(Color.parseColor("#8899A6"));
         }
     }
 }
