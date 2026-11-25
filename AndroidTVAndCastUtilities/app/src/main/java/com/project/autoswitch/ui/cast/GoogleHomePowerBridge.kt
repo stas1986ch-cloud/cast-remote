@@ -1,8 +1,8 @@
 /**
  * @file GoogleHomePowerBridge.kt
- * @summary Crash-hardened Google Home SDK OnOff bridge matching cast-remote v3.2.1's full FactoryRegistry, Kotlin 2.4 runtime, and Activity lifecycle.
- * @description Uses a single app-scoped HomeClient with CoroutineExceptionHandler, full 25-type/37-trait FactoryRegistry,lifecycle-safe consent, and persistent CrashCapture logging.
- * @testing Compiled against Kotlin 2.4.0 stdlib + activity-ktx 1.9.3 + play-services-home 17.1.0 via signed assembleRelease (v2.4).
+ * @summary Full Google Home SDK device discovery and OnOff power bridge for TVs, speakers, displays, lights, plugs, switches, fans, and sensors.
+ * @description Enumerates all Google Home structures and devices, exposes each device's types and exact OnOff support to Java, and executes OnOff.on()/off() by exact HomeDevice key or name.
+ * @testing Compiled against Kotlin 2.4.0 stdlib + play-services-home 17.1.0 via Gradle assembleRelease (v2.7).
  */
 package com.project.autoswitch.ui.cast
 
@@ -42,29 +42,39 @@ import kotlin.system.exitProcess
 
 object GoogleHomePowerBridge {
 
+    class HomeDeviceSnapshot(
+        @JvmField val key: String,
+        @JvmField val homeName: String,
+        @JvmField val name: String,
+        @JvmField val typeSummary: String,
+        @JvmField val category: String, // TV, SPEAKER, DISPLAY, LIGHT, PLUG, SWITCH, FAN, THERMOSTAT, LOCK, CAMERA, SENSOR, OTHER
+        @JvmField val supportsOnOff: Boolean,
+        @JvmField val powerOn: Boolean
+    )
+
     fun interface PowerCallback {
         fun onResult(success: Boolean, message: String)
     }
 
-    fun interface StatesCallback {
-        fun onStates(statesByLowerName: Map<String, Boolean>)
+    fun interface HomeSyncCallback {
+        fun onSynced(devices: List<HomeDeviceSnapshot>, statusNote: String?)
     }
 
     private const val CRASH_FILE = "last_crash.txt"
     private const val DIAG_FILE = "cast_diag.txt"
 
     private val consentInFlight = AtomicBoolean(false)
+    private val devicesByKey = ConcurrentHashMap<String, HomeDevice>()
     private val devicesByLowerName = ConcurrentHashMap<String, HomeDevice>()
 
     @Volatile private var sharedClient: HomeClient? = null
     @Volatile private var lastSyncMs = 0L
-    @Volatile private var homeConsentFailedReason: String? = null
 
     private val homeCoroutineHandler = CoroutineExceptionHandler { _, throwable ->
-        homeConsentFailedReason = "Home SDK background error: ${throwable.message ?: throwable.javaClass.simpleName}"
+        // Prevent uncaught internal Play Services Home coroutine exceptions from crashing process.
+        val _ignored = throwable.message
     }
 
-    // Exact 25-type, 37-trait registry proven working in cast-remote v3.2.1.
     private fun buildRegistry(): FactoryRegistry = FactoryRegistry(
         types = listOf(
             CastingVideoPlayerDevice,
@@ -217,31 +227,28 @@ object GoogleHomePowerBridge {
         try {
             val hc = getOrCreateClient(activity)
             hc.registerActivityResultCallerForPermissions(activity)
-            logDiag(activity, "HomeClient registered for CastRemoteActivity")
+            logDiag(activity, "HomeClient registered")
         } catch (t: Throwable) {
-            val msg = "HomeClient register failed: ${t.javaClass.simpleName}: ${t.message}"
-            logDiag(activity, msg)
-            homeConsentFailedReason = msg
+            logDiag(activity, "HomeClient register failed: ${t.javaClass.simpleName}: ${t.message}")
         }
     }
 
     @JvmStatic
     fun unregisterActivity(activity: ComponentActivity) {
-        // Keep sharedClient alive across config/consent transitions just like cast-remote v3.2.1;
-        // do not null it out while an OAuth ActivityResult may still be returning.
+        // Keep sharedClient alive across consent/activity transitions.
     }
 
     private suspend fun findOnOff(device: HomeDevice): OnOff? {
         val tries: List<suspend () -> OnOff?> = listOf(
-            { withTimeout(3_000) { device.typeOrNull(CastingVideoPlayerDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(GoogleTVDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(GoogleDisplayDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(OnOffLightDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(DimmableLightDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(ExtendedColorLightDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(ColorTemperatureLightDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(OnOffPluginUnitDevice).firstOrNull() }?.standardTraits?.onOff },
-            { withTimeout(3_000) { device.typeOrNull(FanDevice).firstOrNull() }?.standardTraits?.onOff }
+            { withTimeout(2_500) { device.typeOrNull(CastingVideoPlayerDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(GoogleTVDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(GoogleDisplayDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(OnOffLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(DimmableLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(ExtendedColorLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(ColorTemperatureLightDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(OnOffPluginUnitDevice).firstOrNull() }?.standardTraits?.onOff },
+            { withTimeout(2_500) { device.typeOrNull(FanDevice).firstOrNull() }?.standardTraits?.onOff }
         )
         for (t in tries) {
             try {
@@ -253,140 +260,199 @@ object GoogleHomePowerBridge {
         return null
     }
 
-    private suspend fun ensureSynced(activity: ComponentActivity, forceRefresh: Boolean): String? {
-        homeConsentFailedReason?.let { return it }
-        if (activity.isFinishing || activity.isDestroyed) return "Screen closed"
-        val hc = try {
-            getOrCreateClient(activity)
-        } catch (t: Throwable) {
-            val r = "Home SDK init error: ${t.message}"
-            logDiag(activity, r)
-            homeConsentFailedReason = r
-            return r
+    private fun classifyTypes(typeNames: List<String>, devName: String): Pair<String, String> {
+        val joined = (typeNames.joinToString(" ") + " " + devName).lowercase(Locale.US)
+        return when {
+            joined.contains("projector") || joined.contains("fengmi") || joined.contains("xgimi") || joined.contains("formovie") ->
+                "PROJECTOR" to "Projector"
+            typeNames.any { it.contains("GoogleTV") } ->
+                "TV" to "Google TV"
+            typeNames.any { it.contains("CastingVideoPlayer") } ->
+                "TV" to "TV"
+            typeNames.any { it.contains("GoogleDisplay") } ->
+                "DISPLAY" to "Smart Display"
+            typeNames.any { it.contains("Speaker") } ->
+                "SPEAKER" to "Speaker"
+            typeNames.any { it.contains("Color") || it.contains("Dimmable") || it.contains("OnOffLight") } ->
+                "LIGHT" to "Smart Light"
+            typeNames.any { it.contains("PluginUnit") } ->
+                "PLUG" to "Smart Plug"
+            typeNames.any { it.contains("Switch") } ->
+                "SWITCH" to "Wall Switch"
+            typeNames.any { it.contains("Fan") } ->
+                "FAN" to "Fan"
+            typeNames.any { it.contains("Thermostat") } ->
+                "THERMOSTAT" to "Thermostat"
+            typeNames.any { it.contains("DoorLock") } ->
+                "LOCK" to "Smart Lock"
+            typeNames.any { it.contains("Camera") || it.contains("Doorbell") } ->
+                "CAMERA" to "Camera"
+            typeNames.any { it.contains("Sensor") } ->
+                "SENSOR" to "Sensor"
+            typeNames.any { it.contains("WindowCovering") } ->
+                "SHADE" to "Window Shade"
+            else -> "OTHER" to (typeNames.firstOrNull()?.replace("Device", "") ?: "Home Device")
         }
-
-        val permState = withTimeout(12_000) {
-            hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
-        }
-        logDiag(activity, "Home permission state: $permState")
-
-        if (permState != PermissionsState.GRANTED) {
-            if (!consentInFlight.compareAndSet(false, true)) {
-                return "Google Home sign-in already open"
-            }
-            try {
-                val res = withContext(Dispatchers.Main) {
-                    hc.requestPermissions(
-                        ForcePermissionFlow.FORCE_LAUNCH,
-                        consentScreenOptions = ConsentScreenOptions(
-                            structureId = null,
-                            allowedStructureIds = emptyList(),
-                            isAllowStructureChange = false
-                        )
-                    )
-                }
-                logDiag(activity, "Consent result: ${res.status} ${res.errorMessage ?: ""}")
-                if (res.status != PermissionsResultStatus.SUCCESS) {
-                    // Do not permanently latch CANCELLED so user can retry cleanly on next switch toggle.
-                    return "Google Home consent returned ${res.status} ${res.errorMessage ?: ""}".trim()
-                }
-            } catch (t: Throwable) {
-                val reason = "Google Home login error (${t.javaClass.simpleName}: ${t.message})"
-                logDiag(activity, reason)
-                return reason
-            } finally {
-                consentInFlight.set(false)
-            }
-        }
-
-        val stale = (System.currentTimeMillis() - lastSyncMs) > 5 * 60 * 1000L
-        if (forceRefresh || devicesByLowerName.isEmpty() || stale) {
-            val structures = withTimeout(12_000) { hc.structures().first() }
-            logDiag(activity, "Home structures found: ${structures.size}")
-            for (s in structures) {
-                try {
-                    val devs = withTimeout(12_000) { s.devices().first() }
-                    for (d in devs) {
-                        devicesByLowerName[d.name.trim().lowercase()] = d
-                    }
-                } catch (t: Throwable) {
-                    logDiag(activity, "Structure '${s.name}' scan error: ${t.message}")
-                }
-            }
-            if (devicesByLowerName.isNotEmpty()) lastSyncMs = System.currentTimeMillis()
-        }
-        return null
     }
 
-    private fun lookupDevice(targetName: String): HomeDevice? {
-        val norm = targetName.trim().lowercase()
+    private suspend fun requestConsentIfNeeded(
+        activity: ComponentActivity,
+        hc: HomeClient,
+        allowPrompt: Boolean,
+        forceLaunch: Boolean = false
+    ): String? {
+        if (!forceLaunch) {
+            val permState = withTimeout(10_000) {
+                hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
+            }
+            if (permState == PermissionsState.GRANTED) return null
+            if (!allowPrompt) return "Tap 'Home +' above to connect Google Home devices"
+        }
+        if (!consentInFlight.compareAndSet(false, true)) return "Google Home sign-in already open"
+        return try {
+            val res = withContext(Dispatchers.Main) {
+                hc.requestPermissions(
+                    ForcePermissionFlow.FORCE_LAUNCH,
+                    consentScreenOptions = ConsentScreenOptions(
+                        structureId = null,
+                        allowedStructureIds = emptyList(),
+                        isAllowStructureChange = true
+                    )
+                )
+            }
+            logDiag(activity, "Consent result: ${res.status} ${res.errorMessage ?: ""}")
+            if (res.status == PermissionsResultStatus.SUCCESS) null
+            else "Google Home consent: ${res.status}"
+        } catch (t: Throwable) {
+            val r = "Google Home login error: ${t.message}"
+            logDiag(activity, r)
+            r
+        } finally {
+            consentInFlight.set(false)
+        }
+    }
+
+    @JvmStatic
+    fun syncAllHomeDevices(activity: ComponentActivity, promptIfNeeded: Boolean, callback: HomeSyncCallback) {
+        syncAllHomeDevices(activity, promptIfNeeded, false, callback)
+    }
+
+    /**
+     * Fetches ALL devices across all Google Home structures (TVs, speakers, lights, plugs, switches, fans, etc.).
+     * If forceReconsent is true, opens the Google Home structure & device picker so new device types/rooms can be added.
+     */
+    @JvmStatic
+    fun syncAllHomeDevices(
+        activity: ComponentActivity,
+        promptIfNeeded: Boolean,
+        forceReconsent: Boolean,
+        callback: HomeSyncCallback
+    ) {
+        activity.lifecycleScope.launch(Dispatchers.IO + homeCoroutineHandler) {
+            try {
+                if (activity.isFinishing || activity.isDestroyed) return@launch
+                val hc = getOrCreateClient(activity)
+                val permErr = requestConsentIfNeeded(
+                    activity,
+                    hc,
+                    allowPrompt = promptIfNeeded,
+                    forceLaunch = forceReconsent
+                )
+                if (permErr != null) {
+                    callback.onSynced(emptyList(), permErr)
+                    return@launch
+                }
+
+                val structures = withTimeout(12_000) { hc.structures().first() }
+                val snapshots = ArrayList<HomeDeviceSnapshot>()
+                for (s in structures) {
+                    val devs = try {
+                        withTimeout(12_000) { s.devices().first() }
+                    } catch (t: Throwable) {
+                        logDiag(activity, "Structure '${s.name}' timeout: ${t.message}")
+                        continue
+                    }
+                    for (d in devs) {
+                        val typeNames = try {
+                            withTimeout(4_000) { d.types().first().map { it.javaClass.simpleName } }
+                        } catch (_: Throwable) { emptyList() }
+                        // Skip internal Matter RootNode hub placeholders that aren't user-facing devices
+                        if (typeNames.size == 1 && typeNames[0].contains("RootNode")) continue
+
+                        val key = "home::${s.name}::${d.name}"
+                        devicesByKey[key] = d
+                        devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
+
+                        val onOff = findOnOff(d)
+                        val supportsPower = onOff != null && (onOff.supports(OnOff.Command.Off) || onOff.supports(OnOff.Command.On))
+                        val isOn = onOff?.onOff ?: true
+                        val (cat, label) = classifyTypes(typeNames, d.name)
+
+                        snapshots.add(
+                            HomeDeviceSnapshot(
+                                key = key,
+                                homeName = s.name,
+                                name = d.name,
+                                typeSummary = if (s.name.isNotEmpty()) "$label · ${s.name}" else label,
+                                category = cat,
+                                supportsOnOff = supportsPower,
+                                powerOn = isOn
+                            )
+                        )
+                    }
+                }
+                lastSyncMs = System.currentTimeMillis()
+                logDiag(activity, "Synced ${snapshots.size} Google Home device(s)")
+                callback.onSynced(snapshots, null)
+            } catch (t: Throwable) {
+                val err = "${t.javaClass.simpleName}: ${t.message}"
+                logDiag(activity, "syncAllHomeDevices failed: $err")
+                callback.onSynced(emptyList(), err)
+            }
+        }
+    }
+
+    private fun lookupDevice(homeKeyOrName: String, fallbackName: String): HomeDevice? {
+        devicesByKey[homeKeyOrName]?.let { return it }
+        val norm = fallbackName.trim().lowercase(Locale.US)
         devicesByLowerName[norm]?.let { return it }
         return devicesByLowerName.entries.firstOrNull { (k, _) ->
             k.contains(norm) || norm.contains(k)
         }?.value
     }
 
-    /**
-     * Passively reads live OnOff state for all Google Home devices (only if permission is already GRANTED,
-     * never triggering an unsolicited OAuth popup during background refresh).
-     */
     @JvmStatic
-    fun queryPowerStates(activity: ComponentActivity, callback: StatesCallback) {
+    fun setPower(activity: ComponentActivity, homeKeyOrId: String, deviceName: String, turnOn: Boolean, callback: PowerCallback) {
         activity.lifecycleScope.launch(Dispatchers.IO + homeCoroutineHandler) {
             try {
-                if (activity.isFinishing || activity.isDestroyed) return@launch
                 val hc = getOrCreateClient(activity)
-                val perm = withTimeout(5_000) {
-                    hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
-                }
-                if (perm != PermissionsState.GRANTED) return@launch
-                val structures = withTimeout(10_000) { hc.structures().first() }
-                val out = HashMap<String, Boolean>()
-                for (s in structures) {
-                    try {
-                        val devs = withTimeout(10_000) { s.devices().first() }
-                        for (d in devs) {
-                            val key = d.name.trim().lowercase()
-                            devicesByLowerName[key] = d
-                            val onOff = findOnOff(d)
-                            val cur = onOff?.onOff
-                            if (cur != null) {
-                                out[key] = cur
-                            }
-                        }
-                    } catch (_: Throwable) {
-                    }
-                }
-                if (out.isNotEmpty()) {
-                    lastSyncMs = System.currentTimeMillis()
-                    callback.onStates(out)
-                }
-            } catch (_: Throwable) {
-            }
-        }
-    }
-
-    @JvmStatic
-    fun setPower(activity: ComponentActivity, deviceName: String, turnOn: Boolean, callback: PowerCallback) {
-        activity.lifecycleScope.launch(Dispatchers.IO + homeCoroutineHandler) {
-            try {
-                val permErr = ensureSynced(activity, forceRefresh = false)
+                val permErr = requestConsentIfNeeded(activity, hc, allowPrompt = true)
                 if (permErr != null) {
                     callback.onResult(false, permErr)
                     return@launch
                 }
-                var dev = lookupDevice(deviceName)
+                var dev = lookupDevice(homeKeyOrId, deviceName)
                 if (dev == null) {
-                    ensureSynced(activity, forceRefresh = true)
-                    dev = lookupDevice(deviceName)
+                    // Refresh live structures once if cache missed
+                    val structures = withTimeout(10_000) { hc.structures().first() }
+                    for (s in structures) {
+                        try {
+                            val devs = withTimeout(10_000) { s.devices().first() }
+                            for (d in devs) {
+                                devicesByKey["home::${s.name}::${d.name}"] = d
+                                devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                    dev = lookupDevice(homeKeyOrId, deviceName)
                 }
                 if (dev == null) {
-                    callback.onResult(false, "'$deviceName' not found in Google Home")
+                    callback.onResult(false, "'$deviceName' is not linked in Google Home")
                     return@launch
                 }
                 val onOff = findOnOff(dev)
                 if (onOff == null) {
-                    callback.onResult(false, "'${dev.name}' has no Google Home OnOff trait")
+                    callback.onResult(false, "'${dev.name}' does not support Google Home On/Off")
                     return@launch
                 }
                 if (turnOn) onOff.on() else onOff.off()
