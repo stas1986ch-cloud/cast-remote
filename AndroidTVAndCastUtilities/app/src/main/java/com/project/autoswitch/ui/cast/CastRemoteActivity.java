@@ -1809,27 +1809,62 @@ public class CastRemoteActivity extends AppCompatActivity {
     }
 
     /**
-     * Real Hardware Power-Off / Power-On Execution:
-     * 1. ALWAYS attempts Google Home OnOff.off()/on() first (exact same mechanism as Google Assistant).
-     * 2. Falls back to paired Android TV Remote v2 hardware POWER_OFF / POWER_ON (TLS port 6466).
-     * 3. For Wake/ON only, falls back to Cast HDMI-CEC wake.
-     * 4. For Turn OFF when Cast name doesn't match Google Home name and TV isn't paired yet:
-     *    NEVER just cuts the stream! Reverts UI state to ON and offers 1-tap linking to your Google Home TV
-     *    or 1-time Android TV PIN pairing to physically power OFF the TV.
+     * Real Hardware Power-Off / Wake-Up Execution (v3.1):
+     * - Turn ON (targetOn == true): Uses WAKE UP first on LAN Cast devices (Cast HDMI-CEC wake + ATV KEYCODE_WAKEUP),
+     *   falling back to Google Home OnOff.on() for non-Cast smart devices or sleeping Wi-Fi interfaces.
+     * - Turn OFF (targetOn == false): Uses Android / Google Home power-off cascade first
+     *   (OnOff.off -> LowPower.sleep -> KeypadInput(PowerOffFunction) -> ExtendedKeypadInput(PowerOffFunction/Power)),
+     *   falling back to paired Android TV Remote POWER_OFF / 1-time TV PIN pairing.
      */
     private void setDevicePowerTarget(DeviceItem dev, boolean targetOn, boolean interactiveAllowed) {
         final boolean previousOn = dev.powerOn;
         dev.powerOn = targetOn;
         dev.state = targetOn ? "ON" : "OFF";
         renderDevices();
-        setStatus((targetOn ? "Powering ON " : "Powering OFF ") + dev.name + "...");
+        setStatus((targetOn ? "Waking up " : "Powering OFF ") + dev.name + "...");
 
         if (dev.isPhone) {
             markPowerUpdated(dev, targetOn, dev.name + " marked " + (targetOn ? "ON." : "OFF."));
             return;
         }
 
-        // Step 1: ALWAYS try Google Home OnOff first!
+        // TURN ON: Use WAKE UP first on Cast devices ("Wake up should be used to turn on")
+        if (targetOn && dev.hasCast && !dev.host.isEmpty()) {
+            runSafeBg(() -> {
+                boolean woke = false;
+                if (engine.isPaired(dev.id)) {
+                    try {
+                        engine.sendPower(dev.id, dev.host, CastAndTvEngine.PowerAction.POWER_ON);
+                        woke = true;
+                    } catch (Exception ignored) {}
+                }
+                try {
+                    engine.wakeViaCast(dev.host, dev.port);
+                    woke = true;
+                } catch (Exception e) {
+                    GoogleHomePowerBridge.logDiag(this, "wakeViaCast(" + dev.name + ") note: " + e.getMessage());
+                }
+                if (woke) {
+                    markPowerUpdated(dev, true, "Woke up " + dev.name + " (ON).");
+                    return;
+                }
+                // Fallback to Google Home if TV Wi-Fi interface was asleep during Cast wake
+                GoogleHomePowerBridge.setPower(this, dev.homeKey != null ? dev.homeKey : "", dev.name, true, (success, msg) -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    if (success) {
+                        markPowerUpdated(dev, true, "Woke up " + msg + " via Google Home.");
+                    } else {
+                        dev.powerOn = previousOn;
+                        dev.state = previousOn ? "ON" : "OFF";
+                        runSafeUi(this::renderDevices);
+                        setStatus("Wake up failed: " + msg);
+                    }
+                });
+            });
+            return;
+        }
+
+        // TURN OFF (and Smart Home Turn ON): Execute Google Home / Android power traits first!
         GoogleHomePowerBridge.setPower(this, dev.homeKey != null ? dev.homeKey : "", dev.name, targetOn, (success, msg) -> {
             if (isFinishing() || isDestroyed()) return;
             if (success) {
@@ -1839,13 +1874,12 @@ public class CastRemoteActivity extends AppCompatActivity {
                 return;
             }
 
-            // Step 2: Try Android TV Remote v2 / HDMI-CEC Wake if this is a LAN Cast device
+            // Fallback to Android TV Remote v2 (port 6466 / 6467) on LAN Cast TVs
             if (dev.hasCast && !dev.host.isEmpty()) {
                 executeHardwareLanPower(dev, targetOn, previousOn, interactiveAllowed, msg);
                 return;
             }
 
-            // Revert cleanly if non-Cast device failed
             dev.powerOn = previousOn;
             dev.state = previousOn ? "ON" : "OFF";
             runSafeUi(this::renderDevices);
@@ -1953,7 +1987,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         ScrollView sv = new ScrollView(this);
         TextView tv = new TextView(this);
         String body = report.length() > 8000
-                ? ("AndroidTV & Cast Utilities " + verLabel + "\n...\n" + report.substring(report.length() - 7900))
+                ? ("Google Screen Control and Cast " + verLabel + "\n...\n" + report.substring(report.length() - 7900))
                 : report;
         tv.setText(body);
         tv.setTextSize(11f);
