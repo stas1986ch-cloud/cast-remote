@@ -664,9 +664,11 @@ public class CastRemoteActivity extends AppCompatActivity {
         TextView title = new TextView(this);
         title.setText("Cast Device Controls");
         title.setTextColor(COL_NEON_CYAN);
-        title.setTextSize(19.5f);
+        title.setTextSize(17.5f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setPadding(dp(14), 0, 0, 0);
+        title.setSingleLine(true);
+        title.setGravity(Gravity.CENTER);
+        title.setPadding(dp(8), 0, dp(8), 0);
         title.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         topBar.addView(title);
 
@@ -1938,35 +1940,15 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private void showReauthorizeHomeDialog(String reason) {
         if (isFinishing() || isDestroyed()) return;
-        String pkg = getPackageName();
-        boolean isOauthCancelled = reason != null && reason.toUpperCase(Locale.US).contains("CANCEL");
-        StringBuilder msg = new StringBuilder();
-        msg.append("Google Home smart devices need authorization on this app/network.\n\nStatus: ")
-           .append(reason != null ? reason : "Not authorized");
-        if (isOauthCancelled) {
-            msg.append("\n\nNote: If Google Home closed without showing the device picker, ensure package '")
-               .append(pkg)
-               .append("' + SHA-1 'BC:91:2C:95:23:0A:71:41:65:30:22:79:D3:A0:9D:E0:38:BC:C3:99' is added as an Android OAuth Client in Google Cloud Console.\n\nLocal Wi-Fi Cast, Volume, HDMI Wake, and TV PIN Pairing still work on any Wi-Fi network.");
-        } else {
-            msg.append("\n\nTap 'Reauthorize Now' to sign in and grant access to your Google Home rooms and devices.");
-        }
-
-        AlertDialog.Builder b = new AlertDialog.Builder(this)
-                .setTitle("Reauthorize Google Home")
-                .setMessage(msg.toString())
-                .setPositiveButton("Reauthorize Now", (d, w) -> {
-                    setStatus("Launching Google Home authorization...");
+        new AlertDialog.Builder(this)
+                .setTitle("Connect Google Home")
+                .setMessage("Approve Google Home access to view and control all your TVs and smart home devices.")
+                .setPositiveButton("Approve Access", (d, w) -> {
+                    setStatus("Opening Google Home approval...");
                     syncGoogleHomeDevices(true, true);
                 })
-                .setNegativeButton("Use Local Wi-Fi", null);
-        if (isOauthCancelled) {
-            b.setNeutralButton("Copy OAuth SHA-1", (d, w) -> {
-                GoogleHomePowerBridge.copyToClipboard(this, "OAuth Client",
-                        "Package: " + pkg + "\nSHA-1: BC:91:2C:95:23:0A:71:41:65:30:22:79:D3:A0:9D:E0:38:BC:C3:99");
-                Toast.makeText(this, "Copied Package + SHA-1", Toast.LENGTH_SHORT).show();
-            });
-        }
-        b.show();
+                .setNegativeButton("Use Local Wi-Fi", null)
+                .show();
     }
 
     private void showPowerLinkOrPairDialog(DeviceItem castDev, String homeFailReason) {
