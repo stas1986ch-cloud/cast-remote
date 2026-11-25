@@ -186,7 +186,21 @@ object GoogleHomePowerBridge {
     }
 
     @JvmStatic
+    fun getAppVersionLabel(context: Context): String {
+        return try {
+            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            val vName = pInfo.versionName ?: "?"
+            @Suppress("DEPRECATION")
+            val vCode = if (android.os.Build.VERSION.SDK_INT >= 28) pInfo.longVersionCode else pInfo.versionCode.toLong()
+            "v$vName (build $vCode)"
+        } catch (_: Throwable) {
+            "v2.9"
+        }
+    }
+
+    @JvmStatic
     fun readDiagnosticReport(context: Context): String {
+        val ver = getAppVersionLabel(context)
         val diag = try {
             val f = File(context.filesDir, DIAG_FILE)
             if (f.exists()) f.readText() else "No diagnostic entries yet."
@@ -195,7 +209,7 @@ object GoogleHomePowerBridge {
             val f = File(context.filesDir, CRASH_FILE)
             if (f.exists()) f.readText() else "No crash recorded."
         } catch (_: Throwable) { "Could not read crash log." }
-        return "=== Diagnostic Log ===\n$diag\n\n=== Last Crash ===\n$crash"
+        return "AndroidTV & Cast Utilities $ver\nPackage: ${context.packageName}\n\n=== Diagnostic Log ===\n$diag\n\n=== Last Crash ===\n$crash"
     }
 
     @JvmStatic
@@ -306,7 +320,7 @@ object GoogleHomePowerBridge {
                 hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
             }
             if (permState == PermissionsState.GRANTED) return null
-            if (!allowPrompt) return "Tap 'Home +' above to connect Google Home devices"
+            if (!allowPrompt) return "Tap 'Connect / Manage Google Home Devices' under the title"
         }
         if (!consentInFlight.compareAndSet(false, true)) return "Google Home sign-in already open"
         return try {
