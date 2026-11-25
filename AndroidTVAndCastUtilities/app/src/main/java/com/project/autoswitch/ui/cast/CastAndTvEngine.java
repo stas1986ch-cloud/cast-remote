@@ -701,8 +701,8 @@ public final class CastAndTvEngine {
                                 CastWire.stringField(2, Build.MANUFACTURER),
                                 CastWire.varintField(3, 1),
                                 CastWire.stringField(4, "1"),
-                                CastWire.stringField(5, "com.project.autoswitch.ui"),
-                                CastWire.stringField(6, "2.0")
+                                CastWire.stringField(5, "com.stas.castremote"),
+                                CastWire.stringField(6, "3.0")
                         );
                         byte[] cfg = CastWire.concat(CastWire.varintField(1, 622), CastWire.bytesField(2, info));
                         writeAtvFramed(sock, CastWire.bytesField(1, cfg));
@@ -727,14 +727,14 @@ public final class CastAndTvEngine {
                 if (configured && activeSet && isPoweredOn != null) break;
             }
 
-            Long keyCode = null;
-            Boolean expectedState = isPoweredOn;
+            Long keyCode;
+            Boolean expectedState;
             if (action == PowerAction.POWER_ON) {
-                if (Boolean.FALSE.equals(isPoweredOn)) { keyCode = KEYCODE_POWER; expectedState = true; }
-                else if (isPoweredOn == null) { keyCode = KEYCODE_WAKEUP; expectedState = true; }
+                keyCode = Boolean.FALSE.equals(isPoweredOn) ? KEYCODE_POWER : KEYCODE_WAKEUP;
+                expectedState = true;
             } else if (action == PowerAction.POWER_OFF) {
-                if (Boolean.TRUE.equals(isPoweredOn)) { keyCode = KEYCODE_POWER; expectedState = false; }
-                else if (isPoweredOn == null) { keyCode = KEYCODE_SLEEP; expectedState = false; }
+                keyCode = Boolean.TRUE.equals(isPoweredOn) ? KEYCODE_POWER : KEYCODE_SLEEP;
+                expectedState = false;
             } else {
                 keyCode = KEYCODE_POWER;
                 expectedState = isPoweredOn != null ? !isPoweredOn : null;

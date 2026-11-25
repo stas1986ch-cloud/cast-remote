@@ -1,8 +1,8 @@
 /**
  * @file CastRemoteActivity.java
- * @summary Unified Cast & Smart Home Remote screen (v2.9) with versioned logs, clear Google Home button under title, universal stateful Wake/Turn Off switches, and stored default sound levels.
- * @description Gives every device a stateful SwitchCompat toggle ('Wake / Turn On' <-> 'Turn Off · ON') that updates live status, places 'Manage Google Home Devices' under the sticky header title, prepends app version to logs, and auto-applies default volume levels.
- * @testing Compiled and lint-checked via Gradle assembleRelease (v2.9).
+ * @summary Unified Cast & Smart Home Remote screen (v3.0) with real Google Home / ATV Remote TV power-off, 1-tap Home TV power linking, versioned logs, and stored default sound levels.
+ * @description Always executes real hardware power-off via Google Home OnOff.off() or Android TV Remote POWER_OFF (never cutting the Cast stream as a fake power-off), lets users link mismatched Cast/Home TV names in 1 tap, and auto-applies default sound levels.
+ * @testing Compiled and lint-checked via Gradle assembleRelease (v3.0).
  */
 package com.project.autoswitch.ui.cast;
 
@@ -62,6 +62,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private static final String KEY_PINNED = "pinned_device_ids";
     private static final String KEY_SAVED_DEVICES = "saved_network_devices_v1";
     private static final String KEY_DEFAULT_VOLUMES = "device_default_volumes_v1";
+    private static final String KEY_LINKED_HOME = "linked_cast_home_keys_v1";
     private static final String CAST_TYPE = "_googlecast._tcp.";
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
@@ -111,7 +112,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         String volumeControlType;  // "attenuation", "master", or "fixed"
         String homeKey;            // "home::<structure>::<name>" when linked to Google Home
         boolean supportsHomeOnOff;
-        String homeCategory;       // TV, PROJECTOR, SPEAKER, DISPLAY, LIGHT, PLUG, SWITCH, FAN, etc.
+        String homeCategory;
         String homeTypeSummary;
 
         DeviceItem(String id, String name, String model, String state, String title,
@@ -143,6 +144,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private final Map<String, DeviceItem> phoneDevices = new ConcurrentHashMap<>();
     private final Map<String, DeviceItem> homeDevices = new ConcurrentHashMap<>();
     private final Map<String, Double> defaultVolumes = new ConcurrentHashMap<>();
+    private final Map<String, String> linkedHomeKeys = new ConcurrentHashMap<>();
     private Set<String> pinnedIds = new HashSet<>();
 
     private CastAndTvEngine engine;
@@ -172,6 +174,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
         setContentView(buildUi());
         loadDefaultVolumes();
+        loadLinkedHomeKeys();
         loadSavedDevices();
         renderDevices();
         refreshDevices(false);
@@ -205,7 +208,45 @@ public class CastRemoteActivity extends AppCompatActivity {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
-    // MARK: - Stored Default Sound Levels (Persisted by ID + Home Key + Normalized Name)
+    // MARK: - Persisted Cast <-> Google Home Links (When Cast Name Differs From Home Name)
+
+    private void loadLinkedHomeKeys() {
+        linkedHomeKeys.clear();
+        try {
+            String raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LINKED_HOME, null);
+            if (raw == null || raw.isEmpty()) return;
+            JSONObject obj = new JSONObject(raw);
+            Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                String v = obj.optString(k, "");
+                if (!v.isEmpty()) linkedHomeKeys.put(k, v);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void saveLinkedHomeKey(DeviceItem castDev, String homeKey) {
+        castDev.homeKey = homeKey;
+        castDev.supportsHomeOnOff = true;
+        linkedHomeKeys.put(castDev.id, homeKey);
+        try {
+            JSONObject obj = new JSONObject();
+            for (Map.Entry<String, String> e : linkedHomeKeys.entrySet()) {
+                obj.put(e.getKey(), e.getValue());
+            }
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_LINKED_HOME, obj.toString())
+                    .apply();
+        } catch (Exception ignored) {}
+        // Remove standalone duplicate Home card now that it's linked to this Cast device
+        if (homeDevices.remove(homeKey) != null && pinnedIds.remove(homeKey)) {
+            pinnedIds.add(castDev.id);
+        }
+        saveDevicesToPrefs();
+    }
+
+    // MARK: - Stored Default Sound Levels
 
     private String normNameKey(String name) {
         return "name::" + (name != null ? name.trim().toLowerCase(Locale.US) : "");
@@ -398,22 +439,22 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private String iconGlyphForKind(DeviceKind kind) {
         switch (kind) {
-            case PROJECTOR:  return "\uD83D\uDCFD\uFE0F"; // 📽️ Projector
-            case SPEAKER:    return "\uD83D\uDD0A";       // 🔊 Speaker / Audio
-            case DISPLAY:    return "\uD83D\uDDA5\uFE0F"; // 🖥️ Smart Display
-            case PHONE:      return "\uD83D\uDCF1";       // 📱 Phone / Tablet
-            case LIGHT:      return "\uD83D\uDCA1";       // 💡 Smart Light
-            case PLUG:       return "\uD83D\uDD0C";       // 🔌 Smart Plug
-            case SWITCH:     return "\uD83D\uDD18";       // 🔘 Wall Switch
-            case FAN:        return "\uD83C\uDF00";       // 🌀 Fan
-            case THERMOSTAT: return "\uD83C\uDF21\uFE0F"; // 🌡️ Thermostat
-            case LOCK:       return "\uD83D\uDD12";       // 🔒 Smart Lock
-            case CAMERA:     return "\uD83D\uDCF7";       // 📷 Camera / Doorbell
-            case SENSOR:     return "\uD83D\uDCE1";       // 📡 Sensor
-            case SHADE:      return "\uD83E\uDE9F";       // 🪟 Window Shade
-            case OTHER:      return "\uD83C\uDFE0";       // 🏠 Smart Home Device
+            case PROJECTOR:  return "\uD83D\uDCFD\uFE0F";
+            case SPEAKER:    return "\uD83D\uDD0A";
+            case DISPLAY:    return "\uD83D\uDDA5\uFE0F";
+            case PHONE:      return "\uD83D\uDCF1";
+            case LIGHT:      return "\uD83D\uDCA1";
+            case PLUG:       return "\uD83D\uDD0C";
+            case SWITCH:     return "\uD83D\uDD18";
+            case FAN:        return "\uD83C\uDF00";
+            case THERMOSTAT: return "\uD83C\uDF21\uFE0F";
+            case LOCK:       return "\uD83D\uDD12";
+            case CAMERA:     return "\uD83D\uDCF7";
+            case SENSOR:     return "\uD83D\uDCE1";
+            case SHADE:      return "\uD83E\uDE9F";
+            case OTHER:      return "\uD83C\uDFE0";
             case TV:
-            default:         return "\uD83D\uDCFA";       // 📺 TV / Google TV
+            default:         return "\uD83D\uDCFA";
         }
     }
 
@@ -633,7 +674,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         topBar.addView(btnLog);
         stickyHeader.addView(topBar);
 
-        // Row 2 (Moved clearly under title & renamed): Connect / Manage Google Home Devices
+        // Row 2 (Moved under title & clearly named): Connect / Manage Google Home Devices
         Button btnManageHome = new Button(this);
         btnManageHome.setText("\uD83C\uDFE0  Connect / Manage Google Home Devices");
         btnManageHome.setAllCaps(false);
@@ -779,7 +820,11 @@ public class CastRemoteActivity extends AppCompatActivity {
                 item.isMuted = o.optBoolean("isMuted", false);
                 item.volumeControlType = o.optString("volumeControlType", "attenuation");
                 item.homeKey = o.optString("homeKey", "");
-                item.supportsHomeOnOff = o.optBoolean("supportsHomeOnOff", false);
+                String savedLink = linkedHomeKeys.get(id);
+                if (savedLink != null && !savedLink.isEmpty()) {
+                    item.homeKey = savedLink;
+                }
+                item.supportsHomeOnOff = o.optBoolean("supportsHomeOnOff", false) || !item.homeKey.isEmpty();
                 item.homeCategory = o.optString("homeCategory", "");
                 item.homeTypeSummary = o.optString("homeTypeSummary", "");
                 item.defaultVolumeLevel = lookupDefaultVolume(item);
@@ -788,7 +833,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     phoneDevices.putIfAbsent(id, item);
                 } else if (hasCast && !host.isEmpty()) {
                     castDevices.putIfAbsent(id, item);
-                } else {
+                } else if (!linkedHomeKeys.containsValue(id)) {
                     homeDevices.putIfAbsent(id, item);
                 }
             }
@@ -841,16 +886,21 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private DeviceItem findMatchingCastDevice(GoogleHomePowerBridge.HomeDeviceSnapshot snap) {
         String normHome = snap.name.trim().toLowerCase(Locale.US);
+        // 1. Persisted user link or exact homeKey match
         for (DeviceItem c : castDevices.values()) {
-            if (snap.key.equals(c.homeKey)) return c;
+            if (snap.key.equals(c.homeKey) || snap.key.equals(linkedHomeKeys.get(c.id))) {
+                return c;
+            }
         }
+        // 2. Exact case-insensitive name match
         for (DeviceItem c : castDevices.values()) {
             if (c.name.trim().toLowerCase(Locale.US).equals(normHome)) return c;
         }
+        // 3. Substring match for media categories
         if (isMediaHomeCategory(snap.category)) {
             for (DeviceItem c : castDevices.values()) {
                 String normCast = c.name.trim().toLowerCase(Locale.US);
-                if (normCast.length() >= 4 && normHome.length() >= 4
+                if (normCast.length() >= 3 && normHome.length() >= 3
                         && (normCast.contains(normHome) || normHome.contains(normCast))) {
                     return c;
                 }
@@ -977,10 +1027,17 @@ public class CastRemoteActivity extends AppCompatActivity {
                 item.homeCategory = existing.homeCategory;
                 item.homeTypeSummary = existing.homeTypeSummary;
             }
+            String persistedLink = linkedHomeKeys.get(uid);
+            if (persistedLink != null && !persistedLink.isEmpty()) {
+                item.homeKey = persistedLink;
+                item.supportsHomeOnOff = true;
+            }
+
             String normFriendly = friendly.trim().toLowerCase(Locale.US);
             for (Map.Entry<String, DeviceItem> he : homeDevices.entrySet()) {
                 DeviceItem hd = he.getValue();
-                if (hd.name.trim().toLowerCase(Locale.US).equals(normFriendly)) {
+                if ((!item.homeKey.isEmpty() && item.homeKey.equals(hd.homeKey))
+                        || hd.name.trim().toLowerCase(Locale.US).equals(normFriendly)) {
                     item.homeKey = hd.homeKey;
                     item.supportsHomeOnOff = hd.supportsHomeOnOff;
                     item.powerOn = hd.powerOn;
@@ -1105,7 +1162,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         return val != null ? new String(val, StandardCharsets.UTF_8) : null;
     }
 
-    // MARK: - Card Rendering (Every Device Has Stateful Wake / Turn Off Toggle + Live Status)
+    // MARK: - Card Rendering
 
     private void togglePin(DeviceItem dev) {
         if (pinnedIds.contains(dev.id)) {
@@ -1171,7 +1228,6 @@ public class CastRemoteActivity extends AppCompatActivity {
             cardLp.bottomMargin = dp(12);
             card.setLayoutParams(cardLp);
 
-            // Card Header: [Device Type Icon Badge] + [Name & Type/State/DefaultVol] + [Pair if TV/Projector] + [Pin]
             LinearLayout header = new LinearLayout(this);
             header.setOrientation(LinearLayout.HORIZONTAL);
             header.setGravity(Gravity.CENTER_VERTICAL);
@@ -1235,7 +1291,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             header.addView(btnPin);
             card.addView(header);
 
-            // Row 1: Cast / Peer YouTube Play & Mirror (on Cast or Peer Receiver targets)
+            // Row 1: Cast / Peer YouTube Play & Mirror
             if (dev.hasCast || dev.isPhone) {
                 Button btnPlay = makeControlSquare("Play Here", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
                 btnPlay.setOnClickListener(v -> playOnDevice(dev));
@@ -1245,7 +1301,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 card.addView(makeTwoUpRow(btnPlay, btnMirror, 12));
             }
 
-            // Row 2: EVERY device gets a stateful Wake / Turn Off SwitchCompat control that updates status!
+            // Row 2: Stateful Wake / Turn Off Toggle
             LinearLayout powerSwitchBox = makeSwitchSquare(
                     displayPowerLabel(dev),
                     dev.powerOn,
@@ -1276,7 +1332,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 card.addView(makeTwoUpRow(powerSwitchBox, btnSync, dev.isPhone ? 8 : 12));
             }
 
-            // Row 3: Volume Control + Stored Default Sound Level Controls
+            // Row 3: Volume + Stored Default Sound Levels
             if (supportsVolumeControl(dev)) {
                 card.addView(buildVolumeSection(dev));
             }
@@ -1347,7 +1403,6 @@ public class CastRemoteActivity extends AppCompatActivity {
             volWrap.addView(sliderRow);
         }
 
-        // Uniform 2-up Row: Vol - | Vol +
         Button btnVolDown = makeControlSquare("\uD83D\uDD09  Vol −", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
         btnVolDown.setOnClickListener(v -> stepDeviceVolume(dev, -0.10));
 
@@ -1356,7 +1411,6 @@ public class CastRemoteActivity extends AppCompatActivity {
 
         volWrap.addView(makeTwoUpRow(btnVolDown, btnVolUp, isFixed ? 0 : 8));
 
-        // Uniform 2-up Row: Store Default Sound Level | 1-Tap Apply Stored Default
         if (!isFixed) {
             boolean hasDefault = dev.defaultVolumeLevel >= 0.0;
             int defPct = hasDefault ? (int) Math.round(dev.defaultVolumeLevel * 100.0) : -1;
@@ -1545,7 +1599,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         });
     }
 
-    // MARK: - Cast / Mirror / Stop / Universal Stateful Power Toggle Actions
+    // MARK: - Cast / Mirror / Stop / Hardware Power Off Engine
 
     private void playOnDevice(DeviceItem dev) {
         CastWire.ParsedLink parsed = CastWire.parseYouTubeLink(linkInput.getText().toString());
@@ -1686,14 +1740,14 @@ public class CastRemoteActivity extends AppCompatActivity {
     }
 
     private void stopDevice(DeviceItem dev) {
-        setStatus("Stopping " + dev.name + "...");
+        setStatus("Stopping Cast stream on " + dev.name + "...");
         runSafeBg(() -> {
             try {
                 engine.stopCastApp(dev.host, dev.port);
                 dev.state = dev.powerOn ? "ON" : "OFF";
                 dev.title = "";
                 saveDevicesToPrefs();
-                setStatus("Stopped Cast on " + dev.name + ".");
+                setStatus("Stopped Cast stream on " + dev.name + ".");
                 runSafeUi(this::renderDevices);
             } catch (Exception e) {
                 setStatus("Stop failed: " + e.getMessage());
@@ -1702,7 +1756,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     }
 
     private void stopAllDevices() {
-        setStatus("Stopping all Cast sessions...");
+        setStatus("Stopping all Cast streams...");
         runSafeBg(() -> {
             for (DeviceItem tv : castDevices.values()) {
                 try {
@@ -1712,7 +1766,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 } catch (Exception ignored) {}
             }
             saveDevicesToPrefs();
-            setStatus("Stopped all Cast sessions.");
+            setStatus("Stopped all Cast streams.");
             runSafeUi(this::renderDevices);
         });
     }
@@ -1732,11 +1786,9 @@ public class CastRemoteActivity extends AppCompatActivity {
             setStatus("No TVs or displays discovered yet.");
             return;
         }
-        setStatus("Turning off " + targets.size() + " TV/display(s)...");
+        setStatus("Powering OFF " + targets.size() + " TV/display(s)...");
         for (DeviceItem tv : targets) {
-            if (tv.powerOn) {
-                setDevicePowerTarget(tv, false, false);
-            }
+            setDevicePowerTarget(tv, false, false);
         }
     }
 
@@ -1757,84 +1809,71 @@ public class CastRemoteActivity extends AppCompatActivity {
     }
 
     /**
-     * Stateful Wake / Turn Off execution for EVERY device:
-     * 1. Verified Google Home OnOff -> OnOff.on()/off()
-     * 2. Paired Android TV Remote v2 -> POWER_ON / POWER_OFF
-     * 3. LAN Cast fallback -> Wake via HDMI-CEC (becomes 'Turn Off · ON' + status 'ON');
-     *    Turn Off stops Cast & either pairs ATV Remote to send POWER_OFF or puts Cast into standby ('OFF').
+     * Real Hardware Power-Off / Power-On Execution:
+     * 1. ALWAYS attempts Google Home OnOff.off()/on() first (exact same mechanism as Google Assistant).
+     * 2. Falls back to paired Android TV Remote v2 hardware POWER_OFF / POWER_ON (TLS port 6466).
+     * 3. For Wake/ON only, falls back to Cast HDMI-CEC wake.
+     * 4. For Turn OFF when Cast name doesn't match Google Home name and TV isn't paired yet:
+     *    NEVER just cuts the stream! Reverts UI state to ON and offers 1-tap linking to your Google Home TV
+     *    or 1-time Android TV PIN pairing to physically power OFF the TV.
      */
-    private void setDevicePowerTarget(DeviceItem dev, boolean targetOn, boolean interactivePairAllowed) {
+    private void setDevicePowerTarget(DeviceItem dev, boolean targetOn, boolean interactiveAllowed) {
         final boolean previousOn = dev.powerOn;
         dev.powerOn = targetOn;
         dev.state = targetOn ? "ON" : "OFF";
         renderDevices();
-        setStatus((targetOn ? "Waking / Turning ON " : "Turning OFF ") + dev.name + "...");
+        setStatus((targetOn ? "Powering ON " : "Powering OFF ") + dev.name + "...");
 
         if (dev.isPhone) {
             markPowerUpdated(dev, targetOn, dev.name + " marked " + (targetOn ? "ON." : "OFF."));
             return;
         }
 
-        // Path 1: Google Home OnOff when linked
-        if (dev.supportsHomeOnOff) {
-            GoogleHomePowerBridge.setPower(this, dev.homeKey, dev.name, targetOn, (success, msg) -> {
-                if (isFinishing() || isDestroyed()) return;
-                if (success) {
-                    markPowerUpdated(dev, targetOn,
-                            "Turned " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
-                    return;
-                }
-                if (dev.hasCast && !dev.host.isEmpty()) {
-                    executeLanPowerFallback(dev, targetOn, previousOn, interactivePairAllowed);
-                    return;
-                }
-                dev.powerOn = previousOn;
-                dev.state = previousOn ? "ON" : "OFF";
-                runSafeUi(this::renderDevices);
-                setStatus("Power command failed: " + msg);
-            });
-            return;
-        }
-
-        // Path 2: LAN Cast / Android TV Remote (never calls Google Home when unlinked)
-        if (dev.hasCast && !dev.host.isEmpty()) {
-            executeLanPowerFallback(dev, targetOn, previousOn, interactivePairAllowed);
-            return;
-        }
-
-        // Path 3: Google Home device without OnOff trait — update local state & attempt Home lookup if user-tapped
-        GoogleHomePowerBridge.setPower(this, dev.homeKey, dev.name, targetOn, (success, msg) -> {
+        // Step 1: ALWAYS try Google Home OnOff first!
+        GoogleHomePowerBridge.setPower(this, dev.homeKey != null ? dev.homeKey : "", dev.name, targetOn, (success, msg) -> {
             if (isFinishing() || isDestroyed()) return;
             if (success) {
                 dev.supportsHomeOnOff = true;
-                markPowerUpdated(dev, targetOn, "Turned " + (targetOn ? "ON " : "OFF ") + msg + ".");
-            } else {
-                dev.powerOn = previousOn;
-                dev.state = previousOn ? "ON" : "OFF";
-                runSafeUi(this::renderDevices);
-                setStatus(msg);
+                markPowerUpdated(dev, targetOn,
+                        "Powered " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
+                return;
             }
+
+            // Step 2: Try Android TV Remote v2 / HDMI-CEC Wake if this is a LAN Cast device
+            if (dev.hasCast && !dev.host.isEmpty()) {
+                executeHardwareLanPower(dev, targetOn, previousOn, interactiveAllowed, msg);
+                return;
+            }
+
+            // Revert cleanly if non-Cast device failed
+            dev.powerOn = previousOn;
+            dev.state = previousOn ? "ON" : "OFF";
+            runSafeUi(this::renderDevices);
+            setStatus("Power failed: " + msg);
         });
     }
 
-    private void executeLanPowerFallback(DeviceItem dev, boolean targetOn, boolean previousOn, boolean interactivePairAllowed) {
+    private void executeHardwareLanPower(DeviceItem dev, boolean targetOn, boolean previousOn,
+                                         boolean interactiveAllowed, String homeFailReason) {
         runSafeBg(() -> {
-            // A) Paired Android TV Remote v2 hardware power
+            // Step 2A: Paired Android TV Remote v2 hardware power (KEYCODE_POWER / KEYCODE_SLEEP / KEYCODE_WAKEUP)
             if (engine.isPaired(dev.id)) {
                 try {
                     engine.sendPower(dev.id, dev.host,
                             targetOn ? CastAndTvEngine.PowerAction.POWER_ON : CastAndTvEngine.PowerAction.POWER_OFF);
                     markPowerUpdated(dev, targetOn,
-                            "Turned " + (targetOn ? "ON " : "OFF ") + dev.name + " via Android TV Remote.");
+                            "Powered " + (targetOn ? "ON " : "OFF ") + dev.name + " via Android TV Remote.");
                     return;
-                } catch (Exception ignored) {}
+                } catch (Exception e) {
+                    GoogleHomePowerBridge.logDiag(this, "ATV sendPower failed on " + dev.name + ": " + e.getMessage());
+                }
             }
 
-            // B) Waking ON via Cast HDMI-CEC -> button immediately becomes 'Turn Off · ON' and status 'ON'
+            // Step 2B: Waking ON via Cast HDMI-CEC
             if (targetOn) {
                 try {
                     engine.wakeViaCast(dev.host, dev.port);
-                    markPowerUpdated(dev, true, "Woke " + dev.name + " (ON). Tap 'Turn Off · ON' to turn off.");
+                    markPowerUpdated(dev, true, "Woke " + dev.name + " via HDMI-CEC.");
                     return;
                 } catch (Exception e) {
                     dev.powerOn = previousOn;
@@ -1845,25 +1884,55 @@ public class CastRemoteActivity extends AppCompatActivity {
                 }
             }
 
-            // C) Turning OFF an unlinked Cast device:
-            // Stop active Cast session first, then try 1-time ATV Remote PIN pair if TV supports port 6467;
-            // otherwise transition cleanly to OFF (standby) so button becomes 'Wake / Turn On'.
-            try { engine.stopCastApp(dev.host, dev.port); } catch (Exception ignored) {}
-            DeviceKind kind = classifyDevice(dev);
-            if (interactivePairAllowed && (kind == DeviceKind.TV || kind == DeviceKind.PROJECTOR)) {
-                try {
-                    engine.beginPairing(dev.id, dev.host);
-                    dev.powerOn = previousOn;
-                    dev.state = previousOn ? "ON" : "OFF";
-                    runSafeUi(() -> {
-                        renderDevices();
-                        showPinDialog(dev, true);
-                    });
-                    return;
-                } catch (Exception ignored) {}
-            }
-            markPowerUpdated(dev, false, dev.name + " stopped & set to OFF (standby).");
+            // Step 2C: Turning OFF when Cast Wi-Fi name didn't match Google Home name & TV isn't paired yet:
+            // NEVER call stopCastApp (which only cuts off the stream!). Revert switch to ON and offer
+            // 1-tap Google Home TV linking or 1-time ATV Remote PIN pairing!
+            dev.powerOn = true;
+            dev.state = "ON";
+            runSafeUi(() -> {
+                renderDevices();
+                if (interactiveAllowed) {
+                    showPowerLinkOrPairDialog(dev, homeFailReason);
+                } else {
+                    setStatus("Could not power off " + dev.name + " (" + homeFailReason + ").");
+                }
+            });
         });
+    }
+
+    private void showPowerLinkOrPairDialog(DeviceItem castDev, String homeFailReason) {
+        List<GoogleHomePowerBridge.HomeDeviceSnapshot> candidates = GoogleHomePowerBridge.getControllableCandidates();
+        List<String> labels = new ArrayList<>();
+        for (GoogleHomePowerBridge.HomeDeviceSnapshot snap : candidates) {
+            labels.add("\uD83D\uDCFA  " + snap.name + "  (" + snap.typeSummary + ")");
+        }
+        final int pairOptionIdx = labels.size();
+        labels.add("\uD83D\uDD11  Pair directly via TV Screen PIN (Android TV Remote)");
+
+        setStatus("Select which Google Home TV powers off '" + castDev.name + "'...");
+
+        new AlertDialog.Builder(this)
+                .setTitle("Power Off '" + castDev.name + "'")
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    if (which == pairOptionIdx) {
+                        setStatus("Connecting to " + castDev.name + " for TV PIN pairing...");
+                        runSafeBg(() -> {
+                            try {
+                                engine.beginPairing(castDev.id, castDev.host);
+                                runSafeUi(() -> showPinDialog(castDev, true));
+                            } catch (Exception e) {
+                                setStatus("TV PIN pairing unavailable (" + e.getMessage() + "). Link via Google Home instead.");
+                            }
+                        });
+                    } else if (which >= 0 && which < candidates.size()) {
+                        GoogleHomePowerBridge.HomeDeviceSnapshot chosen = candidates.get(which);
+                        saveLinkedHomeKey(castDev, chosen.key);
+                        setStatus("Linked '" + castDev.name + "' → '" + chosen.name + "'. Powering OFF...");
+                        setDevicePowerTarget(castDev, false, false);
+                    }
+                })
+                .setNegativeButton("Cancel", (d, w) -> setStatus("Power off cancelled (" + homeFailReason + ")."))
+                .show();
     }
 
     private void pairTv(DeviceItem dev) {
@@ -1899,6 +1968,10 @@ public class CastRemoteActivity extends AppCompatActivity {
                     GoogleHomePowerBridge.copyToClipboard(this, "Cast Utilities Log", report);
                     Toast.makeText(this, "Log copied (" + verLabel + ")", Toast.LENGTH_SHORT).show();
                 })
+                .setNegativeButton("Clear Log", (d, w) -> {
+                    GoogleHomePowerBridge.clearDiagnosticLogs(this);
+                    Toast.makeText(this, "Diagnostic log cleared", Toast.LENGTH_SHORT).show();
+                })
                 .show();
     }
 
@@ -1912,7 +1985,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         new AlertDialog.Builder(this)
                 .setTitle("Pair with " + dev.name)
                 .setMessage("Enter the 6-character hex code shown on your TV"
-                        + (turnOffAfterPair ? " to pair & turn it OFF." : "."))
+                        + (turnOffAfterPair ? " to pair & power it OFF." : "."))
                 .setView(pinInput)
                 .setCancelable(false)
                 .setPositiveButton("Confirm Pair", (d, w) -> {
@@ -1922,27 +1995,21 @@ public class CastRemoteActivity extends AppCompatActivity {
                         try {
                             engine.completePairing(pin);
                             if (turnOffAfterPair) {
-                                try {
-                                    engine.sendPower(dev.id, dev.host, CastAndTvEngine.PowerAction.POWER_OFF);
-                                } catch (Exception ignored) {}
-                                markPowerUpdated(dev, false, "Paired & turned OFF " + dev.name + "!");
+                                engine.sendPower(dev.id, dev.host, CastAndTvEngine.PowerAction.POWER_OFF);
+                                markPowerUpdated(dev, false, "Paired & powered OFF " + dev.name + "!");
                             } else {
                                 setStatus("Paired with " + dev.name + "!");
                                 runSafeUi(this::renderDevices);
                             }
                         } catch (Exception e) {
                             engine.cancelPairing();
-                            setStatus("Pairing failed: " + e.getMessage());
+                            setStatus("Pairing/power failed: " + e.getMessage());
                         }
                     });
                 })
                 .setNegativeButton("Cancel", (d, w) -> {
                     engine.cancelPairing();
-                    if (turnOffAfterPair) {
-                        markPowerUpdated(dev, false, dev.name + " Cast stopped & marked OFF.");
-                    } else {
-                        setStatus("Pairing cancelled.");
-                    }
+                    setStatus("Pairing cancelled.");
                 })
                 .show();
     }
