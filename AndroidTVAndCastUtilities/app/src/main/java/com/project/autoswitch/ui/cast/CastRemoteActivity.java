@@ -1,8 +1,8 @@
 /**
  * @file CastRemoteActivity.java
- * @summary Unified Cast & Smart Home Remote screen displaying TVs, projectors, speakers, displays, lights, plugs, switches, fans, thermostats, locks, cameras, and sensors with capability-gated controls.
- * @description Merges mDNS Cast/Peer discovery with Google Home structure/device enumeration, gates SwitchCompat power toggles strictly to verified Google Home OnOff or paired ATV Remote devices, and hides media/volume controls on non-Cast smart devices.
- * @testing Compiled and lint-checked via Gradle assembleRelease (v2.7).
+ * @summary Unified Cast & Smart Home Remote screen with per-device stored default sound levels, auto-apply on Power ON / Cast / Mirror, and full Google Home device support.
+ * @description Persists per-device default volume percentages across Cast IDs, Google Home keys, and device names; auto-applies stored sound levels on wake, YouTube cast, and mirror; and provides uniform 2-up gradient save/apply controls.
+ * @testing Compiled and lint-checked via Gradle assembleRelease (v2.8).
  */
 package com.project.autoswitch.ui.cast;
 
@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -60,6 +61,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private static final String PREFS = "CastUtilitiesPrefs";
     private static final String KEY_PINNED = "pinned_device_ids";
     private static final String KEY_SAVED_DEVICES = "saved_network_devices_v1";
+    private static final String KEY_DEFAULT_VOLUMES = "device_default_volumes_v1";
     private static final String CAST_TYPE = "_googlecast._tcp.";
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
@@ -102,12 +104,13 @@ public class CastRemoteActivity extends AppCompatActivity {
         String host;
         int port;
         boolean powerOn;
-        double volumeLevel; // 0.0 .. 1.0
+        double volumeLevel;        // 0.0 .. 1.0
+        double defaultVolumeLevel; // 0.0 .. 1.0, or -1.0 when no default is stored
         boolean isMuted;
-        String volumeControlType; // "attenuation", "master", or "fixed"
-        String homeKey; // "home::<structure>::<name>" when linked to Google Home
+        String volumeControlType;  // "attenuation", "master", or "fixed"
+        String homeKey;            // "home::<structure>::<name>" when linked to Google Home
         boolean supportsHomeOnOff;
-        String homeCategory; // TV, PROJECTOR, SPEAKER, DISPLAY, LIGHT, PLUG, SWITCH, FAN, etc.
+        String homeCategory;       // TV, PROJECTOR, SPEAKER, DISPLAY, LIGHT, PLUG, SWITCH, FAN, etc.
         String homeTypeSummary;
 
         DeviceItem(String id, String name, String model, String state, String title,
@@ -123,6 +126,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             this.port = port;
             this.powerOn = true;
             this.volumeLevel = 0.50;
+            this.defaultVolumeLevel = -1.0;
             this.isMuted = false;
             this.volumeControlType = "attenuation";
             this.homeKey = "";
@@ -137,6 +141,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private final Map<String, DeviceItem> castDevices = new ConcurrentHashMap<>();
     private final Map<String, DeviceItem> phoneDevices = new ConcurrentHashMap<>();
     private final Map<String, DeviceItem> homeDevices = new ConcurrentHashMap<>();
+    private final Map<String, Double> defaultVolumes = new ConcurrentHashMap<>();
     private Set<String> pinnedIds = new HashSet<>();
 
     private CastAndTvEngine engine;
@@ -165,6 +170,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         pinnedIds = new HashSet<>(prefs.getStringSet(KEY_PINNED, new HashSet<>()));
 
         setContentView(buildUi());
+        loadDefaultVolumes();
         loadSavedDevices();
         renderDevices();
         refreshDevices(false);
@@ -198,6 +204,158 @@ public class CastRemoteActivity extends AppCompatActivity {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
 
+    // MARK: - Stored Default Sound Levels (Persisted by ID + Home Key + Normalized Name)
+
+    private String normNameKey(String name) {
+        return "name::" + (name != null ? name.trim().toLowerCase(Locale.US) : "");
+    }
+
+    private void loadDefaultVolumes() {
+        defaultVolumes.clear();
+        try {
+            String raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_DEFAULT_VOLUMES, null);
+            if (raw == null || raw.isEmpty()) return;
+            JSONObject obj = new JSONObject(raw);
+            Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                double v = obj.optDouble(k, -1.0);
+                if (v >= 0.0 && v <= 1.0) {
+                    defaultVolumes.put(k, v);
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void persistDefaultVolumesMap() {
+        try {
+            JSONObject obj = new JSONObject();
+            for (Map.Entry<String, Double> e : defaultVolumes.entrySet()) {
+                if (e.getValue() != null && e.getValue() >= 0.0 && e.getValue() <= 1.0) {
+                    obj.put(e.getKey(), e.getValue());
+                }
+            }
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_DEFAULT_VOLUMES, obj.toString())
+                    .apply();
+        } catch (Exception ignored) {}
+    }
+
+    private double lookupDefaultVolume(DeviceItem d) {
+        if (d == null) return -1.0;
+        Double byId = defaultVolumes.get(d.id);
+        if (byId != null && byId >= 0.0) return byId;
+        if (d.homeKey != null && !d.homeKey.isEmpty()) {
+            Double byHome = defaultVolumes.get(d.homeKey);
+            if (byHome != null && byHome >= 0.0) return byHome;
+        }
+        Double byName = defaultVolumes.get(normNameKey(d.name));
+        if (byName != null && byName >= 0.0) return byName;
+        return d.defaultVolumeLevel;
+    }
+
+    private void saveDeviceDefaultVolume(DeviceItem dev, double level) {
+        double clamped = Math.max(0.0, Math.min(1.0, level));
+        dev.defaultVolumeLevel = clamped;
+        defaultVolumes.put(dev.id, clamped);
+        defaultVolumes.put(normNameKey(dev.name), clamped);
+        if (dev.homeKey != null && !dev.homeKey.isEmpty()) {
+            defaultVolumes.put(dev.homeKey, clamped);
+        }
+        // Sync matching cross-map entries if any
+        for (DeviceItem c : castDevices.values()) {
+            if (c.id.equals(dev.id) || c.name.trim().equalsIgnoreCase(dev.name.trim())) {
+                c.defaultVolumeLevel = clamped;
+            }
+        }
+        for (DeviceItem h : homeDevices.values()) {
+            if (h.id.equals(dev.id) || h.name.trim().equalsIgnoreCase(dev.name.trim())) {
+                h.defaultVolumeLevel = clamped;
+            }
+        }
+        persistDefaultVolumesMap();
+        saveDevicesToPrefs();
+    }
+
+    private void clearDeviceDefaultVolume(DeviceItem dev) {
+        dev.defaultVolumeLevel = -1.0;
+        defaultVolumes.remove(dev.id);
+        defaultVolumes.remove(normNameKey(dev.name));
+        if (dev.homeKey != null && !dev.homeKey.isEmpty()) {
+            defaultVolumes.remove(dev.homeKey);
+        }
+        for (DeviceItem c : castDevices.values()) {
+            if (c.id.equals(dev.id) || c.name.trim().equalsIgnoreCase(dev.name.trim())) {
+                c.defaultVolumeLevel = -1.0;
+            }
+        }
+        for (DeviceItem h : homeDevices.values()) {
+            if (h.id.equals(dev.id) || h.name.trim().equalsIgnoreCase(dev.name.trim())) {
+                h.defaultVolumeLevel = -1.0;
+            }
+        }
+        persistDefaultVolumesMap();
+        saveDevicesToPrefs();
+    }
+
+    private DeviceItem resolveCastEndpointForDevice(DeviceItem dev) {
+        if (dev.hasCast && dev.host != null && !dev.host.isEmpty()) {
+            return dev;
+        }
+        String norm = dev.name.trim().toLowerCase(Locale.US);
+        for (DeviceItem c : castDevices.values()) {
+            if ((dev.homeKey != null && !dev.homeKey.isEmpty() && dev.homeKey.equals(c.homeKey))
+                    || c.name.trim().toLowerCase(Locale.US).equals(norm)) {
+                if (c.host != null && !c.host.isEmpty()) return c;
+            }
+        }
+        return null;
+    }
+
+    private boolean applyDefaultVolumeBlocking(DeviceItem dev) {
+        double target = lookupDefaultVolume(dev);
+        if (target < 0.0 || dev.isPhone) return false;
+        DeviceItem castTarget = resolveCastEndpointForDevice(dev);
+        if (castTarget == null || "fixed".equalsIgnoreCase(castTarget.volumeControlType)) return false;
+        try {
+            if (target > 0.0) {
+                try { engine.setCastMuted(castTarget.host, castTarget.port, false); } catch (Exception ignored) {}
+                castTarget.isMuted = false;
+                dev.isMuted = false;
+            }
+            double actual = engine.setCastVolume(castTarget.host, castTarget.port, target);
+            castTarget.volumeLevel = actual;
+            dev.volumeLevel = actual;
+            saveDevicesToPrefs();
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * Waits for a newly woken TV/Speaker/Display/Projector to accept Cast TLS connections on port 8009
+     * and automatically applies its stored default sound level.
+     */
+    private void autoApplyDefaultVolumeAfterWake(DeviceItem dev) {
+        final double target = lookupDefaultVolume(dev);
+        if (target < 0.0 || dev.isPhone) return;
+        runSafeBg(() -> {
+            long[] delaysMs = new long[]{900L, 2200L, 3500L, 5000L};
+            for (long waitMs : delaysMs) {
+                try { Thread.sleep(waitMs); } catch (InterruptedException ignored) { return; }
+                if (isFinishing() || isDestroyed()) return;
+                if (applyDefaultVolumeBlocking(dev)) {
+                    int pct = (int) Math.round(dev.volumeLevel * 100.0);
+                    setStatus(dev.name + " ON · Applied default sound " + pct + "%.");
+                    runSafeUi(this::renderDevices);
+                    return;
+                }
+            }
+        });
+    }
+
     // MARK: - Device Type Detection & Icon Badges
 
     private DeviceKind classifyDevice(DeviceItem d) {
@@ -218,7 +376,6 @@ public class CastRemoteActivity extends AppCompatActivity {
                 case "SHADE":      return DeviceKind.SHADE;
                 case "OTHER":      return DeviceKind.OTHER;
                 case "TV":
-                    // Still allow projector keyword check below for Google TV projectors
                     break;
             }
         }
@@ -236,6 +393,11 @@ public class CastRemoteActivity extends AppCompatActivity {
             return DeviceKind.SPEAKER;
         }
         return DeviceKind.TV;
+    }
+
+    private boolean isMediaKind(DeviceKind kind) {
+        return kind == DeviceKind.TV || kind == DeviceKind.PROJECTOR
+                || kind == DeviceKind.SPEAKER || kind == DeviceKind.DISPLAY;
     }
 
     private String iconGlyphForKind(DeviceKind kind) {
@@ -607,12 +769,14 @@ public class CastRemoteActivity extends AppCompatActivity {
                         isPhone, hasCast, host, port);
                 item.powerOn = o.optBoolean("powerOn", true);
                 item.volumeLevel = o.optDouble("volumeLevel", 0.50);
+                item.defaultVolumeLevel = o.optDouble("defaultVolumeLevel", -1.0);
                 item.isMuted = o.optBoolean("isMuted", false);
                 item.volumeControlType = o.optString("volumeControlType", "attenuation");
                 item.homeKey = o.optString("homeKey", "");
                 item.supportsHomeOnOff = o.optBoolean("supportsHomeOnOff", false);
                 item.homeCategory = o.optString("homeCategory", "");
                 item.homeTypeSummary = o.optString("homeTypeSummary", "");
+                item.defaultVolumeLevel = lookupDefaultVolume(item);
 
                 if (isPhone) {
                     phoneDevices.putIfAbsent(id, item);
@@ -644,6 +808,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 o.put("hasCast", d.hasCast);
                 o.put("powerOn", d.powerOn);
                 o.put("volumeLevel", d.volumeLevel);
+                o.put("defaultVolumeLevel", d.defaultVolumeLevel);
                 o.put("isMuted", d.isMuted);
                 o.put("volumeControlType", d.volumeControlType);
                 o.put("homeKey", d.homeKey != null ? d.homeKey : "");
@@ -671,15 +836,12 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private DeviceItem findMatchingCastDevice(GoogleHomePowerBridge.HomeDeviceSnapshot snap) {
         String normHome = snap.name.trim().toLowerCase(Locale.US);
-        // 1. Exact key match if already linked
         for (DeviceItem c : castDevices.values()) {
             if (snap.key.equals(c.homeKey)) return c;
         }
-        // 2. Exact case-insensitive name match
         for (DeviceItem c : castDevices.values()) {
             if (c.name.trim().toLowerCase(Locale.US).equals(normHome)) return c;
         }
-        // 3. Substring match ONLY for media categories (never match a Light/Plug onto a TV)
         if (isMediaHomeCategory(snap.category)) {
             for (DeviceItem c : castDevices.values()) {
                 String normCast = c.name.trim().toLowerCase(Locale.US);
@@ -713,7 +875,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     }
                     matchedCast.homeCategory = snap.category;
                     matchedCast.homeTypeSummary = snap.typeSummary;
-                    // Remove duplicate home-only entry if it previously existed before Cast woke up
+                    matchedCast.defaultVolumeLevel = lookupDefaultVolume(matchedCast);
                     if (homeDevices.remove(snap.key) != null && pinnedIds.remove(snap.key)) {
                         pinnedIds.add(matchedCast.id);
                     }
@@ -731,11 +893,11 @@ public class CastRemoteActivity extends AppCompatActivity {
                     item.powerOn = snap.powerOn;
                     item.homeCategory = snap.category;
                     item.homeTypeSummary = snap.typeSummary;
+                    item.defaultVolumeLevel = lookupDefaultVolume(item);
                     homeDevices.put(snap.key, item);
                 }
             }
 
-            // Clean up stale home-only entries that were removed from Google Home
             homeDevices.keySet().retainAll(seenHomeOnlyKeys);
 
             saveDevicesToPrefs();
@@ -793,6 +955,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             if (existing != null) {
                 item.powerOn = existing.powerOn;
                 item.volumeLevel = existing.volumeLevel;
+                item.defaultVolumeLevel = existing.defaultVolumeLevel;
                 item.isMuted = existing.isMuted;
                 item.volumeControlType = existing.volumeControlType;
                 item.homeKey = existing.homeKey;
@@ -800,7 +963,6 @@ public class CastRemoteActivity extends AppCompatActivity {
                 item.homeCategory = existing.homeCategory;
                 item.homeTypeSummary = existing.homeTypeSummary;
             }
-            // Merge any matching asleep Google Home entry so we never show duplicates
             String normFriendly = friendly.trim().toLowerCase(Locale.US);
             for (Map.Entry<String, DeviceItem> he : homeDevices.entrySet()) {
                 DeviceItem hd = he.getValue();
@@ -810,6 +972,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     item.powerOn = hd.powerOn;
                     item.homeCategory = hd.homeCategory;
                     item.homeTypeSummary = hd.homeTypeSummary;
+                    if (hd.defaultVolumeLevel >= 0.0) item.defaultVolumeLevel = hd.defaultVolumeLevel;
                     homeDevices.remove(he.getKey());
                     if (pinnedIds.remove(he.getKey())) {
                         pinnedIds.add(uid);
@@ -817,6 +980,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                     break;
                 }
             }
+            item.defaultVolumeLevel = lookupDefaultVolume(item);
 
             castDevices.put(uid, item);
             saveDevicesToPrefs();
@@ -913,7 +1077,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         return val != null ? new String(val, StandardCharsets.UTF_8) : null;
     }
 
-    // MARK: - Card Rendering (All Device Types + Capability-Gated Power/Cast/Volume)
+    // MARK: - Card Rendering (All Device Types + Capability-Gated Power/Cast/Volume + Default Sound Levels)
 
     private void togglePin(DeviceItem dev) {
         if (pinnedIds.contains(dev.id)) {
@@ -942,14 +1106,13 @@ public class CastRemoteActivity extends AppCompatActivity {
                 boolean pa = pinnedIds.contains(a.id);
                 boolean pb = pinnedIds.contains(b.id);
                 if (pa != pb) return pa ? -1 : 1;
-                // Group active Cast/Phone media targets slightly ahead of unpinned smart accessories, or sort alphabetically?
-                // Keep Cast+Media first among unpinned, then Smart Home alphabetically for clean scanning
                 if (a.hasCast != b.hasCast) return a.hasCast ? -1 : 1;
                 return a.name.toLowerCase(Locale.US).compareTo(b.name.toLowerCase(Locale.US));
             }
         });
 
         for (DeviceItem dev : all) {
+            dev.defaultVolumeLevel = lookupDefaultVolume(dev);
             boolean isPinned = pinnedIds.contains(dev.id);
             boolean isPaired = !dev.isPhone && dev.hasCast && engine.isPaired(dev.id);
             boolean hasPowerSwitch = canTogglePower(dev);
@@ -969,7 +1132,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             cardLp.bottomMargin = dp(12);
             card.setLayoutParams(cardLp);
 
-            // Card Header: [Device Type Icon Badge] + [Name & Type/Room/State] + [Pair if TV/Projector] + [Pin]
+            // Card Header: [Device Type Icon Badge] + [Name & Type/State/DefaultVol] + [Pair if TV/Projector] + [Pin]
             LinearLayout header = new LinearLayout(this);
             header.setOrientation(LinearLayout.HORIZONTAL);
             header.setGravity(Gravity.CENTER_VERTICAL);
@@ -1000,8 +1163,10 @@ public class CastRemoteActivity extends AppCompatActivity {
 
             TextView subView = new TextView(this);
             String stateStr = (!dev.hasCast && dev.supportsHomeOnOff) ? (dev.powerOn ? "ON" : "OFF") : dev.state;
+            String defVolExtra = dev.defaultVolumeLevel >= 0.0
+                    ? (" · Default " + Math.round(dev.defaultVolumeLevel * 100.0) + "%") : "";
             String mediaExtra = (dev.title != null && !dev.title.isEmpty()) ? " · " + dev.title : "";
-            subView.setText(labelForKind(dev, kind) + " · " + stateStr + mediaExtra);
+            subView.setText(labelForKind(dev, kind) + " · " + stateStr + defVolExtra + mediaExtra);
             subView.setTextColor(COL_MUTED);
             subView.setTextSize(11.5f);
             titleCol.addView(subView);
@@ -1042,7 +1207,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 card.addView(makeTwoUpRow(btnPlay, btnMirror, 12));
             }
 
-            // Row 2: Capability-gated Power SwitchCompat & Cast Stop / Sync
+            // Row 2: Capability-gated Power SwitchCompat & Cast Stop / Sync / Pre-set Default Sound
             if (dev.hasCast && !dev.isPhone) {
                 if (hasPowerSwitch) {
                     LinearLayout powerSwitchBox = makeSwitchSquare(
@@ -1055,8 +1220,6 @@ public class CastRemoteActivity extends AppCompatActivity {
                     btnStop.setOnClickListener(v -> stopDevice(dev));
                     card.addView(makeTwoUpRow(powerSwitchBox, btnStop, 8));
                 } else {
-                    // Device is NOT in Google Home with OnOff and NOT paired via ATV Remote:
-                    // never show a broken Power switch that fails with "not found in Google Home".
                     Button btnWake = makeControlSquare("Wake HDMI", new int[]{COL_SLATE_TOP, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
                     btnWake.setOnClickListener(v -> wakeCastOnly(dev));
 
@@ -1065,22 +1228,35 @@ public class CastRemoteActivity extends AppCompatActivity {
                     card.addView(makeTwoUpRow(btnWake, btnStop, 8));
                 }
             } else if (!dev.hasCast && !dev.isPhone && hasPowerSwitch) {
-                // Google Home Smart Device (Light, Plug, Switch, Fan, or Standby TV) with verified OnOff
                 LinearLayout powerSwitchBox = makeSwitchSquare(
                         dev.powerOn ? "Power · ON" : "Power · OFF",
                         dev.powerOn,
                         null,
                         () -> togglePowerDevice(dev));
 
-                Button btnSync = makeControlSquare("Sync State", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
-                btnSync.setOnClickListener(v -> {
-                    setStatus("Syncing " + dev.name + "...");
-                    syncGoogleHomeDevices(true, false);
-                });
-                card.addView(makeTwoUpRow(powerSwitchBox, btnSync, 12));
+                // For asleep Google Home media devices (TV/Projector/Speaker/Display), expose Default Vol preset right next to Power!
+                if (isMediaKind(kind)) {
+                    String defLabel = dev.defaultVolumeLevel >= 0.0
+                            ? ("★ Default · " + Math.round(dev.defaultVolumeLevel * 100.0) + "%")
+                            : "Set Default %";
+                    int[] defCols = dev.defaultVolumeLevel >= 0.0
+                            ? new int[]{COL_AMBER, COL_VIOLET}
+                            : new int[]{COL_SLATE_TOP, COL_SLATE_BOT};
+                    Button btnPresetVol = makeControlSquare(defLabel, defCols, Color.WHITE,
+                            dev.defaultVolumeLevel >= 0.0 ? Color.TRANSPARENT : COL_SLATE_TOP);
+                    btnPresetVol.setOnClickListener(v -> showDefaultVolumeDialog(dev));
+                    card.addView(makeTwoUpRow(powerSwitchBox, btnPresetVol, 12));
+                } else {
+                    Button btnSync = makeControlSquare("Sync State", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+                    btnSync.setOnClickListener(v -> {
+                        setStatus("Syncing " + dev.name + "...");
+                        syncGoogleHomeDevices(true, false);
+                    });
+                    card.addView(makeTwoUpRow(powerSwitchBox, btnSync, 12));
+                }
             }
 
-            // Row 3: Volume Control (only on Cast targets with volume or paired ATV Remote)
+            // Row 3: Volume Control + Stored Default Sound Level Controls
             if (supportsVolumeControl(dev)) {
                 card.addView(buildVolumeSection(dev));
             }
@@ -1099,6 +1275,7 @@ public class CastRemoteActivity extends AppCompatActivity {
 
         boolean isFixed = "fixed".equalsIgnoreCase(dev.volumeControlType);
         int pct = (int) Math.round(Math.max(0.0, Math.min(1.0, dev.volumeLevel)) * 100.0);
+        final Button[] saveBtnRef = new Button[1];
 
         if (!isFixed) {
             LinearLayout sliderRow = new LinearLayout(this);
@@ -1126,6 +1303,9 @@ public class CastRemoteActivity extends AppCompatActivity {
                 public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
                     if (fromUser) {
                         volLabel.setText("\uD83D\uDD0A " + progress + "%");
+                        if (saveBtnRef[0] != null) {
+                            saveBtnRef[0].setText("Save Vol (" + progress + "%)");
+                        }
                     }
                 }
                 @Override public void onStartTrackingTouch(SeekBar sb) {}
@@ -1147,6 +1327,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             volWrap.addView(sliderRow);
         }
 
+        // Uniform 2-up Row: Vol - | Vol +
         Button btnVolDown = makeControlSquare("\uD83D\uDD09  Vol −", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
         btnVolDown.setOnClickListener(v -> stepDeviceVolume(dev, -0.10));
 
@@ -1154,7 +1335,135 @@ public class CastRemoteActivity extends AppCompatActivity {
         btnVolUp.setOnClickListener(v -> stepDeviceVolume(dev, +0.10));
 
         volWrap.addView(makeTwoUpRow(btnVolDown, btnVolUp, isFixed ? 0 : 8));
+
+        // Uniform 2-up Row: Store Default Sound Level | 1-Tap Apply Stored Default
+        if (!isFixed) {
+            boolean hasDefault = dev.defaultVolumeLevel >= 0.0;
+            int defPct = hasDefault ? (int) Math.round(dev.defaultVolumeLevel * 100.0) : -1;
+
+            Button btnSaveDefault = makeControlSquare(
+                    "Save Vol (" + pct + "%)",
+                    new int[]{COL_SLATE_TOP, COL_VIOLET},
+                    Color.WHITE,
+                    Color.TRANSPARENT);
+            saveBtnRef[0] = btnSaveDefault;
+            btnSaveDefault.setOnClickListener(v -> {
+                int currentPct = (int) Math.round(dev.volumeLevel * 100.0);
+                if (hasDefault && defPct == currentPct) {
+                    showDefaultVolumeDialog(dev);
+                } else {
+                    saveDeviceDefaultVolume(dev, dev.volumeLevel);
+                    setStatus("Saved default sound " + currentPct + "% for " + dev.name + ".");
+                    renderDevices();
+                }
+            });
+            btnSaveDefault.setOnLongClickListener(v -> {
+                showDefaultVolumeDialog(dev);
+                return true;
+            });
+
+            Button btnApplyDefault = makeControlSquare(
+                    hasDefault ? ("★ Default · " + defPct + "%") : "Set Default %",
+                    hasDefault ? new int[]{COL_AMBER, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                    Color.WHITE,
+                    hasDefault ? Color.TRANSPARENT : COL_SLATE_TOP);
+            btnApplyDefault.setOnClickListener(v -> {
+                if (hasDefault) {
+                    setDeviceVolume(dev, dev.defaultVolumeLevel);
+                } else {
+                    showDefaultVolumeDialog(dev);
+                }
+            });
+            btnApplyDefault.setOnLongClickListener(v -> {
+                showDefaultVolumeDialog(dev);
+                return true;
+            });
+
+            volWrap.addView(makeTwoUpRow(btnSaveDefault, btnApplyDefault, 8));
+        }
+
         return volWrap;
+    }
+
+    private void showDefaultVolumeDialog(DeviceItem dev) {
+        int initialPct = dev.defaultVolumeLevel >= 0.0
+                ? (int) Math.round(dev.defaultVolumeLevel * 100.0)
+                : (int) Math.round(dev.volumeLevel * 100.0);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(14), dp(20), dp(8));
+
+        TextView readout = new TextView(this);
+        readout.setText("Default Sound Level: " + initialPct + "%");
+        readout.setTextSize(16f);
+        readout.setTypeface(Typeface.DEFAULT_BOLD);
+        readout.setGravity(Gravity.CENTER_HORIZONTAL);
+        readout.setPadding(0, 0, 0, dp(10));
+        box.addView(readout);
+
+        SeekBar sb = new SeekBar(this);
+        sb.setMax(100);
+        sb.setProgress(initialPct);
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                readout.setText("Default Sound Level: " + progress + "%");
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        box.addView(sb);
+
+        // Quick preset buttons row (friendly for both Phone & Google TV D-pad)
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        presets.setGravity(Gravity.CENTER);
+        presets.setPadding(0, dp(12), 0, dp(4));
+        int[] presetVals = new int[]{15, 25, 40, 60, 80};
+        for (int pv : presetVals) {
+            Button pb = new Button(this);
+            pb.setText(pv + "%");
+            pb.setAllCaps(false);
+            pb.setTextSize(12f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMargins(dp(2), 0, dp(2), 0);
+            pb.setLayoutParams(lp);
+            pb.setOnClickListener(v -> sb.setProgress(pv));
+            presets.addView(pb);
+        }
+        box.addView(presets);
+
+        TextView note = new TextView(this);
+        note.setText("Auto-applies when powering ON or starting Cast / Mirror on " + dev.name + ".");
+        note.setTextSize(12f);
+        note.setPadding(0, dp(8), 0, 0);
+        box.addView(note);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("Default Volume · " + dev.name)
+                .setView(box)
+                .setPositiveButton("Save Default", (d, w) -> {
+                    int chosen = sb.getProgress();
+                    double level = chosen / 100.0;
+                    saveDeviceDefaultVolume(dev, level);
+                    if (dev.hasCast && !dev.host.isEmpty() && !"fixed".equalsIgnoreCase(dev.volumeControlType)) {
+                        setDeviceVolume(dev, level);
+                    } else {
+                        setStatus("Saved default sound " + chosen + "% for " + dev.name + ".");
+                        renderDevices();
+                    }
+                })
+                .setNegativeButton("Cancel", null);
+
+        if (dev.defaultVolumeLevel >= 0.0) {
+            builder.setNeutralButton("Clear Default", (d, w) -> {
+                clearDeviceDefaultVolume(dev);
+                setStatus("Cleared default sound level for " + dev.name + ".");
+                renderDevices();
+            });
+        }
+        builder.show();
     }
 
     // MARK: - Volume Actions
@@ -1167,6 +1476,9 @@ public class CastRemoteActivity extends AppCompatActivity {
         setStatus("Setting " + dev.name + " volume to " + pct + "%...");
         runSafeBg(() -> {
             try {
+                if (clamped > 0.0) {
+                    try { engine.setCastMuted(dev.host, dev.port, false); } catch (Exception ignored) {}
+                }
                 double actual = engine.setCastVolume(dev.host, dev.port, clamped);
                 dev.volumeLevel = actual;
                 saveDevicesToPrefs();
@@ -1214,7 +1526,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         });
     }
 
-    // MARK: - Cast / Mirror / Stop / Power Switch Actions
+    // MARK: - Cast / Mirror / Stop / Power Switch Actions (Auto-Applying Default Sound Levels)
 
     private void playOnDevice(DeviceItem dev) {
         CastWire.ParsedLink parsed = CastWire.parseYouTubeLink(linkInput.getText().toString());
@@ -1229,13 +1541,16 @@ public class CastRemoteActivity extends AppCompatActivity {
                     engine.sendToPhone(dev.host, dev.port, parsed.videoId, parsed.startSeconds);
                 } else {
                     String screenId = engine.launchYouTubeAndGetScreenId(dev.host, dev.port);
+                    applyDefaultVolumeBlocking(dev);
                     engine.playYouTubeOnScreen(screenId, parsed.videoId, parsed.startSeconds);
                     dev.state = "PLAYING";
                     dev.contentId = parsed.videoId;
                     dev.powerOn = true;
                     saveDevicesToPrefs();
                 }
-                setStatus("Playing on " + dev.name + ".");
+                String volNote = dev.defaultVolumeLevel >= 0.0
+                        ? (" · Vol " + Math.round(dev.volumeLevel * 100.0) + "%") : "";
+                setStatus("Playing on " + dev.name + volNote + ".");
                 runSafeUi(this::renderDevices);
             } catch (Exception e) {
                 setStatus("Play on " + dev.name + " failed: " + e.getMessage());
@@ -1270,6 +1585,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                         engine.sendToPhone(dev.host, dev.port, parsed.videoId, parsed.startSeconds);
                     } else {
                         String screenId = engine.launchYouTubeAndGetScreenId(dev.host, dev.port);
+                        applyDefaultVolumeBlocking(dev);
                         engine.playYouTubeOnScreen(screenId, parsed.videoId, parsed.startSeconds);
                         dev.state = "PLAYING";
                         dev.contentId = parsed.videoId;
@@ -1326,6 +1642,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                             engine.sendToPhone(t.host, t.port, source.contentId, startSec);
                         } else {
                             String screenId = engine.launchYouTubeAndGetScreenId(t.host, t.port);
+                            applyDefaultVolumeBlocking(t);
                             engine.playYouTubeOnScreen(screenId, source.contentId, startSec);
                             t.state = "PLAYING";
                             t.powerOn = true;
@@ -1351,6 +1668,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 saveDevicesToPrefs();
                 setStatus("Sent HDMI wake to " + dev.name + ".");
                 runSafeUi(this::renderDevices);
+                autoApplyDefaultVolumeAfterWake(dev);
             } catch (Exception e) {
                 setStatus("Wake failed on " + dev.name + ": " + e.getMessage());
             }
@@ -1448,9 +1766,11 @@ public class CastRemoteActivity extends AppCompatActivity {
                     saveDevicesToPrefs();
                     setStatus("Turned " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
                     runSafeUi(this::renderDevices);
+                    if (targetOn) {
+                        autoApplyDefaultVolumeAfterWake(dev);
+                    }
                     return;
                 }
-                // Fallback to paired Android TV Remote if available
                 if (dev.hasCast && engine.isPaired(dev.id)) {
                     sendAtvRemotePower(dev, targetOn, previousOn);
                     return;
@@ -1463,7 +1783,7 @@ public class CastRemoteActivity extends AppCompatActivity {
             return;
         }
 
-        // Path 2: Paired Android TV Remote v2 (never invokes Google Home when not linked)
+        // Path 2: Paired Android TV Remote v2
         if (dev.hasCast && engine.isPaired(dev.id)) {
             sendAtvRemotePower(dev, targetOn, previousOn);
             return;
@@ -1484,6 +1804,9 @@ public class CastRemoteActivity extends AppCompatActivity {
                 saveDevicesToPrefs();
                 setStatus("Turned " + (targetOn ? "ON " : "OFF ") + dev.name + " via Android TV Remote.");
                 runSafeUi(this::renderDevices);
+                if (targetOn) {
+                    autoApplyDefaultVolumeAfterWake(dev);
+                }
             } catch (Exception e) {
                 dev.powerOn = previousOn;
                 runSafeUi(this::renderDevices);

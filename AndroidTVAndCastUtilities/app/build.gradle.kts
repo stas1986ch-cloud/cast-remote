@@ -1,3 +1,9 @@
+/**
+ * @file build.gradle.kts
+ * @summary Gradle module configuration for AndroidTV & Cast Utilities (v2.8).
+ * @description Configures SDK 35, authorized Google Home debug signing identity, Kotlin 2.4.0 stdlib alignment, and Play Services Home 17.1.0 dependencies.
+ * @testing Validated via gradlew assembleRelease and lintVitalRelease.
+ */
 plugins {
     alias(libs.plugins.android.application)
 }
@@ -10,8 +16,8 @@ android {
         applicationId = "com.stas.castremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "2.7"
+        versionCode = 29
+        versionName = "2.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
