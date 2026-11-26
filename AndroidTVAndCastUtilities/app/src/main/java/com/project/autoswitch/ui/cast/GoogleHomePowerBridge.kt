@@ -313,7 +313,7 @@ object GoogleHomePowerBridge {
         }
     }
 
-    private suspend fun requestConsentIfNeeded(
+    internal suspend fun requestConsentIfNeeded(
         activity: ComponentActivity,
         hc: HomeClient,
         allowPrompt: Boolean,

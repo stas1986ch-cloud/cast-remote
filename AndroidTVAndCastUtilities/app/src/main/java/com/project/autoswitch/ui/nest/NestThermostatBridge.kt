@@ -206,14 +206,46 @@ object NestThermostatBridge {
 
     fun syncThermostats(
         activity: ComponentActivity,
+        autoPrompt: Boolean = true,
+        forceReconsent: Boolean = false,
         onResult: (List<ThermostatSnapshot>, String?) -> Unit
     ) {
         activity.lifecycleScope.launch(Dispatchers.IO + errHandler) {
-            val (list, err) = fetchThermostats(activity)
-            if (err == null && list.isNotEmpty()) {
-                evaluateAlerts(activity, list, fireNotifications = false)
+            try {
+                val hc = GoogleHomePowerBridge.getOrCreateClient(activity)
+                val permErr = GoogleHomePowerBridge.requestConsentIfNeeded(
+                    activity = activity,
+                    hc = hc,
+                    allowPrompt = autoPrompt,
+                    forceLaunch = forceReconsent
+                )
+                if (permErr != null) {
+                    activity.runOnUiThread { onResult(emptyList(), permErr) }
+                    return@launch
+                }
+                var (list, err) = fetchThermostats(activity)
+                if (err == null && list.isEmpty() && autoPrompt && !forceReconsent) {
+                    val reauthErr = GoogleHomePowerBridge.requestConsentIfNeeded(
+                        activity = activity,
+                        hc = hc,
+                        allowPrompt = true,
+                        forceLaunch = true
+                    )
+                    if (reauthErr != null) {
+                        activity.runOnUiThread { onResult(emptyList(), reauthErr) }
+                        return@launch
+                    }
+                    val retry = fetchThermostats(activity)
+                    list = retry.first
+                    err = retry.second
+                }
+                if (err == null && list.isNotEmpty()) {
+                    evaluateAlerts(activity, list, fireNotifications = false)
+                }
+                activity.runOnUiThread { onResult(list, err) }
+            } catch (t: Throwable) {
+                activity.runOnUiThread { onResult(emptyList(), t.message ?: t.javaClass.simpleName) }
             }
-            activity.runOnUiThread { onResult(list, err) }
         }
     }
 

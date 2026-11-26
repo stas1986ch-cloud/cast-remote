@@ -280,14 +280,18 @@ class NestMonitorActivity : AppCompatActivity() {
         }
     }
 
-    private fun refreshThermostats() {
-        statusText.text = "Syncing Nest thermostats..."
-        NestThermostatBridge.syncThermostats(this) { list, err ->
+    private fun refreshThermostats(forceReconsent: Boolean = false) {
+        statusText.text = if (forceReconsent) "Opening Google Home access..." else "Syncing Nest thermostats..."
+        NestThermostatBridge.syncThermostats(
+            activity = this,
+            autoPrompt = true,
+            forceReconsent = forceReconsent
+        ) { list, err ->
             currentSnapshots = list
             if (err != null) {
                 statusText.text = err
             } else if (list.isEmpty()) {
-                statusText.text = "No Nest thermostats found in Google Home. Tap 'Connect / Manage Google Home Devices' in Cast Device Controls to grant access."
+                statusText.text = "No Nest thermostats found. Tap Refresh to select your Google Home structure."
             } else {
                 statusText.text = "Found ${list.size} Nest thermostat(s)."
             }
