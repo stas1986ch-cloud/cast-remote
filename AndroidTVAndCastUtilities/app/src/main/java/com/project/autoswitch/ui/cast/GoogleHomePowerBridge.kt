@@ -33,6 +33,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -56,7 +58,8 @@ object GoogleHomePowerBridge {
         @JvmField val typeSummary: String,
         @JvmField val category: String,
         @JvmField val supportsOnOff: Boolean,
-        @JvmField val powerOn: Boolean
+        @JvmField val powerOn: Boolean?,   // null when device doesn't report readable power state
+        @JvmField val mediaState: String   // PLAYING, PAUSED, BUFFERING, STANDBY, ACTIVE, or ""
     )
 
     fun interface PowerCallback {
@@ -125,8 +128,10 @@ object GoogleHomePowerBridge {
     }
 
     @JvmStatic
+    @Synchronized
     fun logDiag(context: Context, msg: String) {
         try {
+            android.util.Log.d("HomeDiag", msg)
             val stamp = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
             val f = File(context.filesDir, DIAG_FILE)
             val prev = if (f.exists()) f.readText() else ""
@@ -205,8 +210,10 @@ object GoogleHomePowerBridge {
     @Synchronized
     internal fun getOrCreateClient(context: Context): HomeClient {
         sharedClient?.let { return it }
+        // CRITICAL: HomeConfig.coroutineContext is passed to Flow.flowOn() internally by HomeSdk,
+        // so it MUST NOT contain a Job (no SupervisorJob()!). Use Dispatchers.IO only.
         val config = HomeConfig(
-            coroutineContext = SupervisorJob() + Dispatchers.IO + homeCoroutineHandler,
+            coroutineContext = Dispatchers.IO,
             factoryRegistry = buildRegistry(),
             homePlatformScope = HomeConfig.HomePlatformScope.HOME_PLATFORM_SCOPE_VERSION_1
         )
@@ -233,14 +240,10 @@ object GoogleHomePowerBridge {
         // Keep sharedClient alive across consent/activity transitions.
     }
 
-    /**
-     * Collects ALL DeviceType endpoints on a HomeDevice using synchronous dt.parts (no blocking Flow timeout!)
-     * so all 52+ Google Home devices sync in ~1 second without hanging.
-     */
-    private suspend fun collectAllDeviceEndpoints(device: HomeDevice): List<DeviceType> {
+    private suspend fun collectAllDeviceEndpoints(context: Context?, device: HomeDevice): List<DeviceType> {
         val out = LinkedHashSet<DeviceType>()
         try {
-            val top = withTimeout(3_500) { device.types().first() }
+            val top = withTimeout(5_000) { device.types().first() }
             for (dt in top) {
                 out.add(dt)
                 try {
@@ -250,7 +253,19 @@ object GoogleHomePowerBridge {
                     }
                 } catch (_: Throwable) {}
             }
-        } catch (_: Throwable) {}
+            if (out.isEmpty() && context != null) {
+                val hasOnOff = try { device.has(OnOff) } catch (_: Throwable) { false }
+                val hasLowPower = try { device.has(LowPower) } catch (_: Throwable) { false }
+                val hasCast = try { device.has(CastingVideoPlayerDevice) } catch (_: Throwable) { false }
+                val hasGtv = try { device.has(GoogleTVDevice) } catch (_: Throwable) { false }
+                val hasDisp = try { device.has(GoogleDisplayDevice) } catch (_: Throwable) { false }
+                logDiag(context, "EMPTY types() on '${device.name}': has(OnOff=$hasOnOff LowPower=$hasLowPower Cast=$hasCast GTV=$hasGtv Disp=$hasDisp)")
+            }
+        } catch (t: Throwable) {
+            if (context != null) {
+                logDiag(context, "types() ERR on '${device.name}': ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }
         return out.toList()
     }
 
@@ -376,49 +391,78 @@ object GoogleHomePowerBridge {
                 logDiag(activity, "Structure '${s.name}' timeout: ${t.message}")
                 continue
             }
-            // Inspect all devices in parallel so 50+ smart home devices finish in < 1s!
+            // Inspect devices with bounded concurrency (12 at a time) so 50+ devices finish quickly with zero IPC timeouts
+            val gate = Semaphore(12)
             val built = coroutineScope {
                 devs.map { d ->
                     async {
-                        val endpoints = collectAllDeviceEndpoints(d)
-                        val typeNames = endpoints.map { it.javaClass.simpleName }.distinct()
-                        if (typeNames.size == 1 && (typeNames[0].contains("RootNode") || typeNames[0].contains("OtaRequestor"))) {
-                            return@async null
-                        }
-                        if (typeNames.size == 1 && (typeNames[0].contains("Routine") || typeNames[0].contains("Scene"))) {
-                            return@async null
-                        }
+                        gate.withPermit {
+                            val endpoints = collectAllDeviceEndpoints(activity, d)
+                            val typeNames = endpoints.map { it.javaClass.simpleName }.distinct()
+                            if (typeNames.size == 1 && (typeNames[0].contains("RootNode") || typeNames[0].contains("OtaRequestor"))) {
+                                return@withPermit null
+                            }
+                            if (typeNames.size == 1 && (typeNames[0].contains("Routine") || typeNames[0].contains("Scene"))) {
+                                return@withPermit null
+                            }
 
-                        val key = "home::${s.name}::${d.name}"
-                        devicesByKey[key] = d
-                        devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
+                            val key = "home::${s.name}::${d.name}"
+                            devicesByKey[key] = d
+                            devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
 
-                        val onOff = findTraitAcrossEndpoints(endpoints, OnOff)
-                        val lowPower = findTraitAcrossEndpoints(endpoints, LowPower)
-                        val keypad = findTraitAcrossEndpoints(endpoints, KeypadInput)
-                        val extKeypad = findTraitAcrossEndpoints(endpoints, ExtendedKeypadInput)
-                        val simpOnOff = findTraitAcrossEndpoints(endpoints, SimplifiedOnOff)
+                            val onOff = findTraitAcrossEndpoints(endpoints, OnOff)
+                            val lowPower = findTraitAcrossEndpoints(endpoints, LowPower)
+                            val keypad = findTraitAcrossEndpoints(endpoints, KeypadInput)
+                            val extKeypad = findTraitAcrossEndpoints(endpoints, ExtendedKeypadInput)
+                            val mediaAct = findTraitAcrossEndpoints(endpoints, MediaActivityState)
+                            val mediaPlay = findTraitAcrossEndpoints(endpoints, MediaPlayback)
 
-                        val supportsPower = (onOff != null || lowPower != null || keypad != null || extKeypad != null)
-                        val isOn = onOff?.onOff ?: (simpOnOff != null || true)
-                        val (cat, label) = classifyTypes(typeNames, d.name)
+                            val supportsPower = (onOff != null || lowPower != null || keypad != null || extKeypad != null)
 
-                        if (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") {
-                            logDiag(
-                                activity,
-                                "TV '${d.name}' [${s.name}] types=${typeNames.joinToString()} traits=[${summarizeAllTraits(endpoints)}]"
+                            val actState = try { mediaAct?.activityState } catch (_: Throwable) { null }
+                            val playState = try { mediaPlay?.currentState } catch (_: Throwable) { null }
+                            val mediaLabel = when {
+                                playState == MediaPlaybackTrait.PlaybackStateEnum.Playing -> "PLAYING"
+                                playState == MediaPlaybackTrait.PlaybackStateEnum.Paused -> "PAUSED"
+                                playState == MediaPlaybackTrait.PlaybackStateEnum.Buffering -> "BUFFERING"
+                                actState == MediaActivityStateTrait.ActivityState.Active -> "ON"
+                                actState == MediaActivityStateTrait.ActivityState.Standby -> "OFF"
+                                actState == MediaActivityStateTrait.ActivityState.Inactive -> "OFF"
+                                else -> ""
+                            }
+
+                            // Determine live power state without falsely overriding unknown (null) to true!
+                            val livePower: Boolean? = when {
+                                onOff?.onOff != null -> onOff.onOff
+                                playState == MediaPlaybackTrait.PlaybackStateEnum.Playing ||
+                                    playState == MediaPlaybackTrait.PlaybackStateEnum.Paused ||
+                                    playState == MediaPlaybackTrait.PlaybackStateEnum.Buffering -> true
+                                actState == MediaActivityStateTrait.ActivityState.Active -> true
+                                actState == MediaActivityStateTrait.ActivityState.Standby ||
+                                    actState == MediaActivityStateTrait.ActivityState.Inactive -> false
+                                else -> null
+                            }
+
+                            val (cat, label) = classifyTypes(typeNames, d.name)
+
+                            if (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") {
+                                logDiag(
+                                    activity,
+                                    "TV '${d.name}' [${s.name}] onOff=${onOff?.onOff} act=$actState play=$playState -> livePower=$livePower types=${typeNames.joinToString()}"
+                                )
+                            }
+
+                            HomeDeviceSnapshot(
+                                key = key,
+                                homeName = s.name,
+                                name = d.name,
+                                typeSummary = if (s.name.isNotEmpty()) "$label · ${s.name}" else label,
+                                category = cat,
+                                supportsOnOff = supportsPower,
+                                powerOn = livePower,
+                                mediaState = mediaLabel
                             )
                         }
-
-                        HomeDeviceSnapshot(
-                            key = key,
-                            homeName = s.name,
-                            name = d.name,
-                            typeSummary = if (s.name.isNotEmpty()) "$label · ${s.name}" else label,
-                            category = cat,
-                            supportsOnOff = supportsPower,
-                            powerOn = isOn
-                        )
                     }
                 }.awaitAll().filterNotNull()
             }
@@ -502,7 +546,7 @@ object GoogleHomePowerBridge {
      * 4. ExtendedKeypadInput (Google TV PowerOffFunction / PowerOnFunction / Power)
      */
     private suspend fun tryExecutePowerOnDevice(activity: ComponentActivity, dev: HomeDevice, turnOn: Boolean): Pair<Boolean, String> {
-        val endpoints = collectAllDeviceEndpoints(dev)
+        val endpoints = collectAllDeviceEndpoints(activity, dev)
         val traitsSummary = summarizeAllTraits(endpoints)
 
         // 1. Standard / Cloud OnOff trait across any DeviceType or child part

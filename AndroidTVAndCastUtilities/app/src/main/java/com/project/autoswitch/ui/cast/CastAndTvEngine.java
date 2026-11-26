@@ -84,9 +84,13 @@ public final class CastAndTvEngine {
         public final double volumeLevel; // 0.0 .. 1.0 (-1 if unknown)
         public final boolean isMuted;
         public final String volumeControlType; // "attenuation", "master", or "fixed"
+        public final Boolean isStandBy;        // true = TV off/standby, false = TV awake, null = unknown
+        public final Boolean isActiveInput;    // true = HDMI input active, false = another input, null = unknown
+        public final String activeAppName;     // non-idle app displayName (e.g. YouTube, Netflix), or ""
 
         public MediaStatus(String state, String title, String contentId, double position,
-                           double volumeLevel, boolean isMuted, String volumeControlType) {
+                           double volumeLevel, boolean isMuted, String volumeControlType,
+                           Boolean isStandBy, Boolean isActiveInput, String activeAppName) {
             this.state = state;
             this.title = title;
             this.contentId = contentId;
@@ -94,6 +98,9 @@ public final class CastAndTvEngine {
             this.volumeLevel = volumeLevel;
             this.isMuted = isMuted;
             this.volumeControlType = volumeControlType;
+            this.isStandBy = isStandBy;
+            this.isActiveInput = isActiveInput;
+            this.activeAppName = activeAppName != null ? activeAppName : "";
         }
     }
 
@@ -217,6 +224,9 @@ public final class CastAndTvEngine {
             double volLevel = -1.0;
             boolean volMuted = false;
             String volType = "attenuation";
+            Boolean isStandBy = null;
+            Boolean isActiveInput = null;
+            String activeAppName = "";
 
             for (int i = 0; i < 6; i++) {
                 CastMsg msg = readCastMsg(inp, out);
@@ -224,11 +234,30 @@ public final class CastAndTvEngine {
                     JSONObject rJson = new JSONObject(msg.payload);
                     JSONObject rStatus = rJson.optJSONObject("status");
                     if (rStatus != null) {
+                        if (rStatus.has("isStandBy") && !rStatus.isNull("isStandBy")) {
+                            isStandBy = rStatus.optBoolean("isStandBy");
+                        }
+                        if (rStatus.has("isActiveInput") && !rStatus.isNull("isActiveInput")) {
+                            isActiveInput = rStatus.optBoolean("isActiveInput");
+                        }
                         JSONObject vol = rStatus.optJSONObject("volume");
                         if (vol != null) {
                             volLevel = vol.optDouble("level", -1.0);
                             volMuted = vol.optBoolean("muted", false);
                             volType = vol.optString("controlType", "attenuation");
+                        }
+                        JSONArray apps = rStatus.optJSONArray("applications");
+                        if (apps != null) {
+                            for (int a = 0; a < apps.length(); a++) {
+                                JSONObject app = apps.optJSONObject(a);
+                                if (app != null && !app.optBoolean("isIdleScreen", false)) {
+                                    String dn = app.optString("displayName", "");
+                                    if (!dn.isEmpty()) {
+                                        activeAppName = dn;
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                     tid = findYouTubeTransportId(rJson);
@@ -236,7 +265,10 @@ public final class CastAndTvEngine {
                 }
             }
             if (tid == null) {
-                return new MediaStatus("IDLE", "", null, 0.0, volLevel, volMuted, volType);
+                String baseState = Boolean.TRUE.equals(isStandBy) ? "OFF"
+                        : (!activeAppName.isEmpty() ? "PLAYING" : "IDLE");
+                return new MediaStatus(baseState, activeAppName, null, 0.0, volLevel, volMuted, volType,
+                        isStandBy, isActiveInput, activeAppName);
             }
 
             writeCastMsg(out, tid, NS_CONNECTION, "{\"type\":\"CONNECT\"}");
@@ -247,18 +279,26 @@ public final class CastAndTvEngine {
                 if (NS_MEDIA.equals(msg.namespace) && msg.payload.contains("MEDIA_STATUS")) {
                     JSONArray arr = new JSONObject(msg.payload).optJSONArray("status");
                     JSONObject st = arr != null ? arr.optJSONObject(0) : null;
-                    if (st == null) return new MediaStatus("IDLE", "", null, 0.0, volLevel, volMuted, volType);
+                    if (st == null) {
+                        return new MediaStatus(Boolean.TRUE.equals(isStandBy) ? "OFF" : "IDLE",
+                                activeAppName, null, 0.0, volLevel, volMuted, volType,
+                                isStandBy, isActiveInput, activeAppName);
+                    }
                     String pState = st.optString("playerState", "IDLE");
                     JSONObject media = st.optJSONObject("media");
                     String cid = media != null ? media.optString("contentId", "") : "";
                     if (cid.length() != 11) cid = null;
                     JSONObject meta = media != null ? media.optJSONObject("metadata") : null;
                     String title = meta != null ? meta.optString("title", "") : "";
+                    if (title.isEmpty()) title = activeAppName;
                     double pos = st.optDouble("currentTime", 0.0);
-                    return new MediaStatus(pState, title, cid, pos, volLevel, volMuted, volType);
+                    return new MediaStatus(pState, title, cid, pos, volLevel, volMuted, volType,
+                            isStandBy, isActiveInput, activeAppName);
                 }
             }
-            return new MediaStatus("IDLE", "", null, 0.0, volLevel, volMuted, volType);
+            return new MediaStatus(Boolean.TRUE.equals(isStandBy) ? "OFF" : "IDLE",
+                    activeAppName, null, 0.0, volLevel, volMuted, volType,
+                    isStandBy, isActiveInput, activeAppName);
         }
     }
 

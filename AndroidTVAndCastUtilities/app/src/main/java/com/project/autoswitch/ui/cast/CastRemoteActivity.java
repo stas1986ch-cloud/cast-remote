@@ -929,12 +929,18 @@ public class CastRemoteActivity extends AppCompatActivity {
                 if (matchedCast != null) {
                     matchedCast.homeKey = snap.key;
                     matchedCast.supportsHomeOnOff = snap.supportsOnOff;
-                    if (snap.supportsOnOff) {
+                    if (snap.powerOn != null) {
                         matchedCast.powerOn = snap.powerOn;
                         if (!snap.powerOn && !"PLAYING".equals(matchedCast.state)) {
                             matchedCast.state = "OFF";
                         } else if (snap.powerOn && "OFF".equals(matchedCast.state)) {
                             matchedCast.state = "ON";
+                        }
+                    }
+                    if (snap.mediaState != null && !snap.mediaState.isEmpty()) {
+                        if ("PLAYING".equals(snap.mediaState) || "PAUSED".equals(snap.mediaState) || "BUFFERING".equals(snap.mediaState)) {
+                            matchedCast.state = snap.mediaState;
+                            matchedCast.powerOn = true;
                         }
                     }
                     matchedCast.homeCategory = snap.category;
@@ -946,18 +952,25 @@ public class CastRemoteActivity extends AppCompatActivity {
                 } else {
                     seenHomeOnlyKeys.add(snap.key);
                     DeviceItem existing = homeDevices.get(snap.key);
-                    boolean initOn = snap.supportsOnOff ? snap.powerOn : (existing == null || existing.powerOn);
-                    String stateLabel = initOn ? "ON" : "OFF";
+                    boolean initOn = snap.powerOn != null ? snap.powerOn : (existing != null ? existing.powerOn : true);
+                    String stateLabel = (snap.mediaState != null && !snap.mediaState.isEmpty())
+                            ? snap.mediaState : (initOn ? "ON" : "OFF");
                     DeviceItem item = existing != null ? existing : new DeviceItem(
                             snap.key, snap.name, snap.typeSummary, stateLabel, "",
                             false, false, "", 0);
                     item.name = snap.name;
                     item.homeKey = snap.key;
                     item.supportsHomeOnOff = snap.supportsOnOff;
-                    if (snap.supportsOnOff) {
+                    if (snap.powerOn != null) {
                         item.powerOn = snap.powerOn;
                     }
-                    item.state = item.powerOn ? "ON" : "OFF";
+                    if (snap.mediaState != null && !snap.mediaState.isEmpty()
+                            && ("PLAYING".equals(snap.mediaState) || "PAUSED".equals(snap.mediaState) || "BUFFERING".equals(snap.mediaState))) {
+                        item.state = snap.mediaState;
+                        item.powerOn = true;
+                    } else {
+                        item.state = item.powerOn ? "ON" : "OFF";
+                    }
                     item.homeCategory = snap.category;
                     item.homeTypeSummary = snap.typeSummary;
                     item.defaultVolumeLevel = lookupDefaultVolume(item);
@@ -1088,7 +1101,14 @@ public class CastRemoteActivity extends AppCompatActivity {
                 try {
                     CastAndTvEngine.MediaStatus st = engine.getMediaStatus(tv.host, tv.port);
                     if (st != null) {
-                        if ("PLAYING".equals(st.state) || "PAUSED".equals(st.state) || "BUFFERING".equals(st.state)) {
+                        if (Boolean.TRUE.equals(st.isStandBy)) {
+                            tv.powerOn = false;
+                            tv.state = "OFF";
+                        } else if (Boolean.FALSE.equals(st.isStandBy)) {
+                            tv.powerOn = true;
+                            tv.state = ("PLAYING".equals(st.state) || "PAUSED".equals(st.state) || "BUFFERING".equals(st.state))
+                                    ? st.state : "ON";
+                        } else if ("PLAYING".equals(st.state) || "PAUSED".equals(st.state) || "BUFFERING".equals(st.state)) {
                             tv.state = st.state;
                             tv.powerOn = true;
                         } else if (!tv.powerOn) {
@@ -1096,7 +1116,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                         } else {
                             tv.state = "ON";
                         }
-                        tv.title = st.title;
+                        tv.title = (st.title != null && !st.title.isEmpty()) ? st.title : st.activeAppName;
                         tv.contentId = st.contentId;
                         tv.position = st.position;
                         if (st.volumeLevel >= 0.0) tv.volumeLevel = st.volumeLevel;
@@ -1832,7 +1852,8 @@ public class CastRemoteActivity extends AppCompatActivity {
             return;
         }
 
-        // TURN ON: Use WAKE UP first on Cast devices ("Wake up should be used to turn on")
+        // TURN ON: Use WAKE UP first on Cast devices ("Wake up should be used to turn on"),
+        // AND sync Google Home OnOff.on() alongside it so TV wakes reliably and Google Home state stays ON!
         if (targetOn && dev.hasCast && !dev.host.isEmpty()) {
             runSafeBg(() -> {
                 boolean woke = false;
@@ -1850,6 +1871,8 @@ public class CastRemoteActivity extends AppCompatActivity {
                 }
                 if (woke) {
                     markPowerUpdated(dev, true, "Woke up " + dev.name + " (ON).");
+                    // Also fire Google Home OnOff.on() in background to keep cloud state in sync
+                    GoogleHomePowerBridge.setPower(this, dev.homeKey != null ? dev.homeKey : "", dev.name, true, (s, m) -> {});
                     return;
                 }
                 // Fallback to Google Home if TV Wi-Fi interface was asleep during Cast wake
