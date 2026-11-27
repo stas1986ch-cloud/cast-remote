@@ -1,12 +1,13 @@
 /**
  * @file NestMonitorActivity.kt
- * @summary Dark-neon Nest Thermostat Monitor activity with project-standard drag-and-drop, shrink/expand, hide/show blocks, alert rules, and 1-tap temp reset.
- * @description Renders the Alert Rules block and all Nest Thermostat blocks in a unified persisted drag-and-drop order with collapse/hide controls and a carved-out Hidden Blocks toggle.
- * @testing Compiled and lint-verified via Gradle testDebugUnitTest and assembleRelease.
+ * @summary Dark-neon Nest Thermostat Monitor (v3.8) with compact drag-and-drop, shrink/expand, hide/show blocks, active warning actions (Restore/Dismiss/Snooze 1d + 15m follow-up), and Change Log.
+ * @description Uses compact TextView header pills so drag, shrink/expand, and hide controls never clip on narrow screens, renders unresolved warnings with 1-tap actions, and displays a timestamped Change & Action Log.
+ * @testing Compiled and verified via Gradle testDebugUnitTest, lintVitalRelease, and assembleRelease.
  */
 package com.project.autoswitch.ui.nest
 
 import android.Manifest
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.Context
 import android.content.pm.PackageManager
@@ -16,6 +17,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.text.TextUtils
 import android.view.DragEvent
 import android.view.Gravity
 import android.view.View
@@ -31,6 +33,8 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.project.autoswitch.ui.cast.GoogleHomePowerBridge
 import org.json.JSONArray
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class NestMonitorActivity : AppCompatActivity() {
@@ -41,10 +45,12 @@ class NestMonitorActivity : AppCompatActivity() {
         private const val KEY_COLLAPSED = "nest_block_collapsed_v1"
         private const val KEY_HIDDEN = "nest_block_hidden_v1"
         private const val RULES_BLOCK_ID = "__nest_alert_rules__"
+        private const val LOG_BLOCK_ID = "__nest_change_log__"
     }
 
     private lateinit var statusText: TextView
-    private lateinit var hiddenBlocksBtn: Button
+    private lateinit var hiddenBlocksBtn: TextView
+    private lateinit var warningsContainer: LinearLayout
     private lateinit var blocksContainer: LinearLayout
 
     private var monitorSwitch: SwitchCompat? = null
@@ -66,6 +72,11 @@ class NestMonitorActivity : AppCompatActivity() {
         setContentView(buildRootView())
         renderAllBlocks()
         refreshThermostats()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        renderAllBlocks()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -110,6 +121,7 @@ class NestMonitorActivity : AppCompatActivity() {
     private fun buildEffectiveOrder(): List<String> {
         val allIds = mutableListOf(RULES_BLOCK_ID)
         currentSnapshots.forEach { allIds.add(it.key) }
+        allIds.add(LOG_BLOCK_ID)
         val result = mutableListOf<String>()
         for (id in blockOrder) {
             if (allIds.contains(id) && !result.contains(id)) result.add(id)
@@ -165,13 +177,13 @@ class NestMonitorActivity : AppCompatActivity() {
         val topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(8))
+            setPadding(dp(12), dp(12), dp(12), dp(8))
         }
-        val backBtn = makePillButton("← Hub", "#22304A", "#FFFFFF") { finish() }
+        val backBtn = makeCompactPill("← Hub", "#22304A", "#FFFFFF") { finish() }
         val titleTv = TextView(this).apply {
             text = "NEST MONITOR"
             setTextColor(Color.parseColor("#00FFFF"))
-            textSize = 22f
+            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             maxLines = 2
@@ -180,9 +192,16 @@ class NestMonitorActivity : AppCompatActivity() {
                 marginEnd = dp(6)
             }
         }
-        val refreshBtn = makePillButton("Refresh", "#0E7490", "#FFFFFF") { refreshThermostats() }
+        val logBtn = makeCompactPill("Log", "#22304A", "#F59E0B") { showFullLogDialog() }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(6) }
+        }
+        val refreshBtn = makeCompactPill("Refresh", "#0E7490", "#FFFFFF") { refreshThermostats() }
         topBar.addView(backBtn)
         topBar.addView(titleTv)
+        topBar.addView(logBtn)
         topBar.addView(refreshBtn)
         root.addView(topBar)
 
@@ -190,17 +209,17 @@ class NestMonitorActivity : AppCompatActivity() {
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), 0, dp(16), dp(8))
+            setPadding(dp(14), 0, dp(14), dp(8))
         }
         statusText = TextView(this).apply {
             text = "Loading Nest thermostats..."
             setTextColor(Color.parseColor("#9CA3AF"))
-            textSize = 13f
+            textSize = 12.5f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginEnd = dp(8)
             }
         }
-        hiddenBlocksBtn = makePillButton("Hidden (0)", "#1E293B", "#9CA3AF") {
+        hiddenBlocksBtn = makeCompactPill("Hidden (0)", "#1E293B", "#9CA3AF") {
             showHiddenBlocks = !showHiddenBlocks
             renderAllBlocks()
         }
@@ -213,8 +232,13 @@ class NestMonitorActivity : AppCompatActivity() {
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(4), dp(16), dp(28))
+            setPadding(dp(14), dp(4), dp(14), dp(28))
         }
+
+        warningsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        content.addView(warningsContainer)
 
         blocksContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -222,10 +246,10 @@ class NestMonitorActivity : AppCompatActivity() {
         content.addView(blocksContainer)
 
         val noteTv = TextView(this).apply {
-            text = "Note: Google's Nest Thermostat hardware and APIs do not support displaying custom text messages on the thermostat screen. Critical buzz alerts are delivered directly to your phone."
+            text = "Note: Google's Nest Thermostat hardware and APIs do not support displaying custom text messages on the thermostat screen. Critical buzz alerts repeat every 15 min until Restored, Dismissed, or Snoozed."
             setTextColor(Color.parseColor("#6B7280"))
-            textSize = 12f
-            setPadding(dp(6), dp(10), dp(6), dp(8))
+            textSize = 11.5f
+            setPadding(dp(4), dp(8), dp(4), dp(8))
         }
         content.addView(noteTv)
 
@@ -234,9 +258,84 @@ class NestMonitorActivity : AppCompatActivity() {
         return root
     }
 
-    // MARK: - Block Rendering (Unified Drag-and-Drop, Shrink/Expand, Hide/Show)
+    // MARK: - Active Warnings Banner (Restore / OK-Dismiss / Snooze 1 Day)
+
+    private fun renderActiveWarnings() {
+        warningsContainer.removeAllViews()
+        val active = NestThermostatBridge.getAllActiveWarnings(this)
+        val fmt = SimpleDateFormat("h:mm a", Locale.US)
+
+        for (w in active) {
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = roundedBg("#2B1218", "#EF4444", 12)
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(12) }
+            }
+
+            val titleTv = TextView(this).apply {
+                text = "⚠ ${w.title} · ${fmt.format(Date(w.triggeredAtMs))}"
+                setTextColor(Color.parseColor("#FCA5A5"))
+                textSize = 14.5f
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            card.addView(titleTv)
+
+            val bodyTv = TextView(this).apply {
+                text = "${w.body}\nFollow-up critical buzz every 15 min until resolved."
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                setPadding(0, dp(4), 0, dp(10))
+            }
+            card.addView(bodyTv)
+
+            val actionRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            val restoreLbl = String.format(Locale.US, "Restore %.0f°F", w.restoreTargetF)
+            val btnRestore = makePillButton(restoreLbl, "#10B981", "#FFFFFF") {
+                NestThermostatBridge.clearActiveWarning(this, w.key)
+                applyTemp(w.key, w.restoreTargetF, "Restored from Warning")
+                renderAllBlocks()
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(6)
+                }
+            }
+            val btnOk = makePillButton("OK / Dismiss", "#334155", "#FFFFFF") {
+                NestThermostatBridge.clearActiveWarning(this, w.key)
+                NestThermostatBridge.appendChangeLog(this, w.name, w.body, "OK / Dismissed")
+                Toast.makeText(this, "Warning dismissed (15m buzz stopped).", Toast.LENGTH_SHORT).show()
+                renderAllBlocks()
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(6)
+                }
+            }
+            val btnSnooze = makePillButton("Snooze 1d", "#F59E0B", "#0A0E17") {
+                NestThermostatBridge.snoozeForOneDay(this, w.key)
+                NestThermostatBridge.clearActiveWarning(this, w.key)
+                NestThermostatBridge.appendChangeLog(this, w.name, w.body, "Snoozed 1 Day (24h)")
+                Toast.makeText(this, "${w.name} snoozed for 24 hours.", Toast.LENGTH_SHORT).show()
+                renderAllBlocks()
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            actionRow.addView(btnRestore)
+            actionRow.addView(btnOk)
+            actionRow.addView(btnSnooze)
+            card.addView(actionRow)
+            warningsContainer.addView(card)
+        }
+    }
+
+    // MARK: - Block Rendering (Compact TextView Pills — Never Clipped)
 
     private fun renderAllBlocks() {
+        renderActiveWarnings()
         blocksContainer.removeAllViews()
 
         val hiddenCount = hiddenBlocks.size
@@ -255,15 +354,15 @@ class NestMonitorActivity : AppCompatActivity() {
         val order = buildEffectiveOrder()
         for (id in order) {
             if (!showHiddenBlocks && hiddenBlocks.contains(id)) continue
-            if (id == RULES_BLOCK_ID) {
-                blocksContainer.addView(buildAlertRulesBlock())
-            } else {
-                snapByKey[id]?.let { blocksContainer.addView(buildThermostatBlock(it)) }
+            when (id) {
+                RULES_BLOCK_ID -> blocksContainer.addView(buildAlertRulesBlock())
+                LOG_BLOCK_ID -> blocksContainer.addView(buildChangeLogBlock())
+                else -> snapByKey[id]?.let { blocksContainer.addView(buildThermostatBlock(it)) }
             }
         }
     }
 
-    private fun attachDragAndDrop(card: LinearLayout, cardBg: GradientDrawable, defaultStrokeHex: String, blockId: String): TextView {
+    private fun attachDragAndDrop(card: LinearLayout, cardBg: GradientDrawable, defaultStrokeHex: String, blockId: String): View.OnLongClickListener {
         card.setOnDragListener { _, event ->
             when (event.action) {
                 DragEvent.ACTION_DRAG_STARTED -> true
@@ -283,27 +382,16 @@ class NestMonitorActivity : AppCompatActivity() {
                 else -> true
             }
         }
-
-        return TextView(this).apply {
-            text = "☰"
-            setTextColor(Color.parseColor("#9CA3AF"))
-            textSize = 16f
-            gravity = Gravity.CENTER
-            setPadding(dp(4), dp(4), dp(8), dp(4))
-            setOnLongClickListener {
-                val data = ClipData.newPlainText("nest_block_id", blockId)
-                val shadow = View.DragShadowBuilder(card)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    card.startDragAndDrop(data, shadow, blockId, 0)
-                } else {
-                    @Suppress("DEPRECATION")
-                    card.startDrag(data, shadow, blockId, 0)
-                }
-                true
+        return View.OnLongClickListener {
+            val data = ClipData.newPlainText("nest_block_id", blockId)
+            val shadow = View.DragShadowBuilder(card)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                card.startDragAndDrop(data, shadow, blockId, 0)
+            } else {
+                @Suppress("DEPRECATION")
+                card.startDrag(data, shadow, blockId, 0)
             }
-            setOnClickListener {
-                Toast.makeText(this@NestMonitorActivity, "Hold ☰ and drag onto another block to reorder", Toast.LENGTH_SHORT).show()
-            }
+            true
         }
     }
 
@@ -319,37 +407,60 @@ class NestMonitorActivity : AppCompatActivity() {
         val isExpanded = !collapsedBlocks.contains(blockId)
         if (isHidden) card.alpha = 0.55f
 
+        val startDrag = attachDragAndDrop(card, cardBg, defaultStrokeHex, blockId)
+
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            setOnLongClickListener(startDrag)
         }
-        header.addView(attachDragAndDrop(card, cardBg, defaultStrokeHex, blockId))
+
+        val dragHandle = TextView(this).apply {
+            text = "☰"
+            setTextColor(Color.parseColor("#9CA3AF"))
+            textSize = 16f
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(4), dp(8), dp(4))
+            setOnLongClickListener(startDrag)
+            setOnClickListener {
+                Toast.makeText(this@NestMonitorActivity, "Hold ☰ and drag onto another block to reorder", Toast.LENGTH_SHORT).show()
+            }
+        }
+        header.addView(dragHandle)
 
         val titleTv = TextView(this).apply {
             text = titleText
             setTextColor(Color.parseColor(titleColorHex))
-            textSize = 15.5f
+            textSize = 14.5f
             typeface = Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
             setOnClickListener { toggleCollapse(blockId) }
+            setOnLongClickListener(startDrag)
         }
         header.addView(titleTv)
 
-        val collapseBtn = makeSmallPill(if (isExpanded) "▾" else "▸", "#22304A", "#00FFFF") {
+        val collapsePill = makeCompactPill(if (isExpanded) "▾" else "▸", "#22304A", "#00FFFF") {
             toggleCollapse(blockId)
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(32)).apply { marginEnd = dp(4) }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(6) }
         }
-        header.addView(collapseBtn)
+        header.addView(collapsePill)
 
-        val hideBtn = makeSmallPill(
+        val hidePill = makeCompactPill(
             if (isHidden) "Show" else "Hide",
             if (isHidden) "#10B981" else "#22304A",
             if (isHidden) "#FFFFFF" else "#9CA3AF"
         ) {
             toggleHide(blockId)
         }
-        header.addView(hideBtn)
+        header.addView(hidePill)
 
         card.addView(header)
         return isExpanded
@@ -377,9 +488,9 @@ class NestMonitorActivity : AppCompatActivity() {
             setPadding(0, dp(10), 0, 0)
         }
         val switchLabel = TextView(this).apply {
-            text = "Background Temp Alerts"
+            text = "Background Temp Alerts (15m follow-up)"
             setTextColor(Color.WHITE)
-            textSize = 15f
+            textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -412,13 +523,32 @@ class NestMonitorActivity : AppCompatActivity() {
         }
         val testBtn = makePillButton("Test Critical Buzz", "#EF4444", "#FFFFFF") {
             requestNotificationPermissionIfNeeded()
-            NestThermostatBridge.postAlertNotification(
-                this,
-                9901,
-                "Nest Critical Test Alert",
-                "Critical alarm buzz is active! Tap to open Nest Monitor."
+            val sampleSnap = currentSnapshots.firstOrNull()
+            val sampleKey = sampleSnap?.key ?: "test_thermostat"
+            val sampleName = sampleSnap?.name ?: "First Floor Thermostat"
+            val w = NestActiveWarning(
+                key = sampleKey,
+                name = sampleName,
+                title = "Test Alert: $sampleName",
+                body = "Simulated drop (75.0°F -> 71.0°F) — test Restore, Dismiss, or Snooze 1d.",
+                triggeredAtMs = System.currentTimeMillis(),
+                restoreTargetF = rules.resetTempF.toDouble(),
+                notifId = 9901
             )
-            Toast.makeText(this, "Critical test alert sent.", Toast.LENGTH_SHORT).show()
+            NestThermostatBridge.saveActiveWarning(this, w)
+            NestThermostatBridge.appendChangeLog(this, sampleName, w.body, "Test Critical Buzz Fired")
+            NestThermostatBridge.postAlertNotification(
+                context = this,
+                id = 9901,
+                title = w.title,
+                body = w.body,
+                thermostatKey = sampleKey,
+                thermostatName = sampleName,
+                restoreTargetF = rules.resetTempF.toDouble(),
+                scheduleFollowup = false
+            )
+            renderAllBlocks()
+            Toast.makeText(this, "Critical test alert fired with Restore/Dismiss/Snooze.", Toast.LENGTH_SHORT).show()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -446,13 +576,18 @@ class NestMonitorActivity : AppCompatActivity() {
 
         val ambStr = snap.ambientF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
         val targetStr = snap.activeTargetF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
+        val snoozed = NestThermostatBridge.isSnoozed(this, snap.key)
+        val snoozeTag = if (snoozed) " · SNOOZED 24h" else ""
         val tempRow = TextView(this).apply {
-            text = "Room: $ambStr   |   Target: $targetStr (${snap.modeLabel})"
+            text = "Room: $ambStr   |   Target: $targetStr (${snap.modeLabel})$snoozeTag"
             setTextColor(
-                if (snap.ambientF != null && snap.ambientF <= rules.minTempF) Color.parseColor("#EF4444")
-                else Color.parseColor("#00FFFF")
+                when {
+                    snoozed -> Color.parseColor("#F59E0B")
+                    snap.ambientF != null && snap.ambientF <= rules.minTempF -> Color.parseColor("#EF4444")
+                    else -> Color.parseColor("#00FFFF")
+                }
             )
-            textSize = 14.5f
+            textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(4), dp(6), dp(4), dp(2))
         }
@@ -476,25 +611,33 @@ class NestMonitorActivity : AppCompatActivity() {
         val currentTarget = snap.activeTargetF ?: snap.ambientF ?: rules.resetTempF.toDouble()
 
         val minusBtn = makePillButton("-1°", "#2A2A3A", "#FFFFFF") {
-            applyTemp(snap.key, currentTarget - 1.0)
+            applyTemp(snap.key, currentTarget - 1.0, "Stepped -1°F")
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(dp(56), LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
+            layoutParams = LinearLayout.LayoutParams(dp(54), LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
         }
         val plusBtn = makePillButton("+1°", "#2A2A3A", "#FFFFFF") {
-            applyTemp(snap.key, currentTarget + 1.0)
+            applyTemp(snap.key, currentTarget + 1.0, "Stepped +1°F")
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(dp(56), LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
+            layoutParams = LinearLayout.LayoutParams(dp(54), LinearLayout.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(6) }
         }
         val resetLabel = String.format(Locale.US, "Reset %.0f°F", rules.resetTempF)
         val resetBtn = makePillButton(resetLabel, "#10B981", "#FFFFFF") {
-            applyTemp(snap.key, rules.resetTempF.toDouble())
+            NestThermostatBridge.clearActiveWarning(this, snap.key)
+            applyTemp(snap.key, rules.resetTempF.toDouble(), "Reset to Default")
         }.apply {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
         }
-        val baseBtn = makePillButton("Baseline", "#334155", "#E5E7EB") {
-            snap.ambientF?.toFloat()?.let { NestThermostatBridge.setBaselineF(this, snap.key, it) }
-            snap.activeTargetF?.toFloat()?.let { NestThermostatBridge.setTargetBaselineF(this, snap.key, it) }
-            Toast.makeText(this, "${snap.name} room & target baselines reset to current.", Toast.LENGTH_SHORT).show()
+        val baseBtn = makePillButton(if (snoozed) "Unsnooze" else "Baseline", "#334155", "#E5E7EB") {
+            if (snoozed) {
+                NestThermostatBridge.clearSnooze(this, snap.key)
+                NestThermostatBridge.appendChangeLog(this, snap.name, "Snooze cleared", "Unsnoozed")
+                Toast.makeText(this, "${snap.name} unsnoozed.", Toast.LENGTH_SHORT).show()
+            } else {
+                snap.ambientF?.toFloat()?.let { NestThermostatBridge.setBaselineF(this, snap.key, it) }
+                snap.activeTargetF?.toFloat()?.let { NestThermostatBridge.setTargetBaselineF(this, snap.key, it) }
+                NestThermostatBridge.appendChangeLog(this, snap.name, "Baseline reset ($ambStr / $targetStr)", "Baseline Updated")
+                Toast.makeText(this, "${snap.name} baselines reset to current.", Toast.LENGTH_SHORT).show()
+            }
             renderAllBlocks()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -506,6 +649,85 @@ class NestMonitorActivity : AppCompatActivity() {
         controls.addView(baseBtn)
         card.addView(controls)
         return card
+    }
+
+    private fun buildChangeLogBlock(): View {
+        val entries = NestThermostatBridge.readChangeLog(this)
+        val versionLabel = GoogleHomePowerBridge.getAppVersionLabel(this)
+        val bg = roundedBg("#131826", "#2A3954", 12)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = bg
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(12) }
+        }
+
+        val expanded = addBlockHeader(card, bg, "#2A3954", LOG_BLOCK_ID, "CHANGE & ACTION LOG (${entries.size})", "#F59E0B")
+        if (!expanded) return card
+
+        val verTv = TextView(this).apply {
+            text = "App Version: $versionLabel"
+            setTextColor(Color.parseColor("#00FFFF"))
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(4), dp(6), dp(4), dp(2))
+        }
+        card.addView(verTv)
+
+        val preview = entries.take(8)
+        val logTv = TextView(this).apply {
+            text = NestThermostatBridge.formatChangeLogText(preview)
+            setTextColor(Color.parseColor("#D1D5DB"))
+            textSize = 11.5f
+            typeface = Typeface.MONOSPACE
+            setPadding(dp(4), dp(4), dp(4), dp(8))
+        }
+        card.addView(logTv)
+
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val viewAllBtn = makePillButton("Full Log", "#22304A", "#00FFFF") { showFullLogDialog() }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
+        }
+        val copyBtn = makePillButton("Copy", "#334155", "#FFFFFF") {
+            val full = "Google Screen Control and Cast $versionLabel\n\n" + NestThermostatBridge.formatChangeLogText(entries)
+            GoogleHomePowerBridge.copyToClipboard(this, "Nest Change Log", full)
+            Toast.makeText(this, "Change log copied.", Toast.LENGTH_SHORT).show()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(6) }
+        }
+        val clearBtn = makePillButton("Clear", "#451A1A", "#FCA5A5") {
+            NestThermostatBridge.clearChangeLog(this)
+            renderAllBlocks()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        btnRow.addView(viewAllBtn)
+        btnRow.addView(copyBtn)
+        btnRow.addView(clearBtn)
+        card.addView(btnRow)
+        return card
+    }
+
+    private fun showFullLogDialog() {
+        val entries = NestThermostatBridge.readChangeLog(this)
+        val versionLabel = GoogleHomePowerBridge.getAppVersionLabel(this)
+        val text = "Google Screen Control and Cast $versionLabel\n\n" + NestThermostatBridge.formatChangeLogText(entries)
+        AlertDialog.Builder(this)
+            .setTitle("Nest Change Log · $versionLabel")
+            .setMessage(text)
+            .setPositiveButton("Copy") { _, _ ->
+                GoogleHomePowerBridge.copyToClipboard(this, "Nest Change Log", text)
+                Toast.makeText(this, "Copied to clipboard.", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Clear") { _, _ ->
+                NestThermostatBridge.clearChangeLog(this)
+                renderAllBlocks()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun addLabeledNumberRow(parent: LinearLayout, label: String, initialValue: String, allowDecimal: Boolean): EditText {
@@ -540,33 +762,29 @@ class NestMonitorActivity : AppCompatActivity() {
         return input
     }
 
+    private fun makeCompactPill(text: String, bgHex: String, textHex: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            this.text = text
+            setTextColor(Color.parseColor(textHex))
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = roundedBg(bgHex, null, 8)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { onClick() }
+        }
+
     private fun makePillButton(text: String, bgHex: String, textHex: String, onClick: () -> Unit): Button =
         Button(this).apply {
             this.text = text
             isAllCaps = false
             setTextColor(Color.parseColor(textHex))
-            textSize = 13f
+            textSize = 12.5f
             typeface = Typeface.DEFAULT_BOLD
             background = roundedBg(bgHex, null, 8)
             minHeight = dp(38)
             minimumHeight = dp(38)
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            setOnClickListener { onClick() }
-        }
-
-    private fun makeSmallPill(text: String, bgHex: String, textHex: String, onClick: () -> Unit): Button =
-        Button(this).apply {
-            this.text = text
-            isAllCaps = false
-            setTextColor(Color.parseColor(textHex))
-            textSize = 11.5f
-            typeface = Typeface.DEFAULT_BOLD
-            background = roundedBg(bgHex, null, 8)
-            minHeight = dp(32)
-            minimumHeight = dp(32)
-            minWidth = dp(32)
-            minimumWidth = dp(32)
-            setPadding(dp(8), dp(2), dp(8), dp(2))
+            setPadding(dp(10), dp(6), dp(10), dp(6))
             setOnClickListener { onClick() }
         }
 
@@ -589,6 +807,12 @@ class NestMonitorActivity : AppCompatActivity() {
         val enabled = monitorSwitch?.isChecked ?: current.enabled
         val rules = NestMonitorRules(enabled, delta, minT, resetT, pollM)
         NestThermostatBridge.saveRules(this, rules)
+        NestThermostatBridge.appendChangeLog(
+            this,
+            "Alert Rules",
+            String.format(Locale.US, "±%.1f°F / ≤%.1f°F / Reset %.0f°F / %dm", delta, minT, resetT, pollM),
+            if (enabled) "Rules Saved (Armed)" else "Rules Saved (Paused)"
+        )
         if (enabled) {
             NestMonitorService.start(this)
         } else {
@@ -614,7 +838,7 @@ class NestMonitorActivity : AppCompatActivity() {
             if (err != null) {
                 statusText.text = err
             } else if (list.isEmpty()) {
-                statusText.text = "No Nest thermostats found. Tap Refresh to select your Google Home structure."
+                statusText.text = "No Nest thermostats found. Tap Refresh to select Google Home."
             } else {
                 statusText.text = "Found ${list.size} Nest thermostat(s)."
             }
@@ -622,12 +846,12 @@ class NestMonitorActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyTemp(key: String, targetF: Double) {
+    private fun applyTemp(key: String, targetF: Double, actionLabel: String = "Manual Set") {
         statusText.text = String.format(Locale.US, "Setting thermostat to %.1f°F...", targetF)
-        NestThermostatBridge.setTargetTemperature(this, key, targetF) { ok, msg ->
+        NestThermostatBridge.setTargetTemperature(this, key, targetF, actionLabel) { ok, msg ->
             statusText.text = msg
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-            if (ok) refreshThermostats()
+            if (ok) refreshThermostats() else renderAllBlocks()
         }
     }
 }

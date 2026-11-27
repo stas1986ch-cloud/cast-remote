@@ -81,6 +81,11 @@
             android:exported="false" />
 
         <receiver
+            android:name="com.project.autoswitch.ui.nest.NestAlertActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
             android:name="com.project.autoswitch.ui.BootReceiver"
             android:enabled="true"
             android:exported="true"

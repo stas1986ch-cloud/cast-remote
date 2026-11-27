@@ -2078,6 +2078,18 @@ public class CastRemoteActivity extends AppCompatActivity {
                         isPaired ? Color.TRANSPARENT : COL_SLATE_TOP);
                 btnPair.setOnClickListener(v -> pairTv(dev));
                 card.addView(makeTwoUpRow(btnSched, btnPair, 8));
+
+                Button btnKeyboard = makeControlSquare(
+                        "⌨ Keyboard / Passwords & D-Pad",
+                        new int[]{COL_VIOLET, COL_CYAN},
+                        Color.WHITE,
+                        Color.TRANSPARENT);
+                LinearLayout.LayoutParams kbLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(CONTROL_SQUARE_HEIGHT_DP));
+                kbLp.topMargin = dp(8);
+                btnKeyboard.setLayoutParams(kbLp);
+                btnKeyboard.setOnClickListener(v -> openTvKeyboardRemoteDialog(dev));
+                card.addView(btnKeyboard);
             } else {
                 LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, dp(CONTROL_SQUARE_HEIGHT_DP));
@@ -2223,6 +2235,145 @@ public class CastRemoteActivity extends AppCompatActivity {
 
         return volWrap;
     }
+
+    // MARK: - TV Keyboard / Password Typing & D-Pad Remote (Android TV Remote v2)
+
+    private void openTvKeyboardRemoteDialog(DeviceItem dev) {
+        if (dev.host == null || dev.host.isEmpty()) {
+            Toast.makeText(this, "TV IP address unavailable — tap Refresh & Sync.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!engine.isPaired(dev.id)) {
+            Toast.makeText(this, "Pair " + dev.name + " once with its 6-char TV PIN to unlock Keyboard & D-Pad.", Toast.LENGTH_LONG).show();
+            pairTv(dev);
+            return;
+        }
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(COL_BG);
+        box.setPadding(dp(16), dp(14), dp(16), dp(14));
+
+        EditText textInput = new EditText(this);
+        textInput.setHint("Type or paste email / password for TV");
+        textInput.setHintTextColor(COL_MUTED);
+        textInput.setTextColor(COL_TEXT);
+        textInput.setSingleLine(true);
+        textInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        textInput.setBackground(gradientButtonBg(new int[]{COL_CARD, COL_CARD}, COL_SLATE_TOP));
+        textInput.setPadding(dp(12), dp(10), dp(12), dp(10));
+        box.addView(textInput);
+
+        Button btnTypeKeys = makeControlSquare("Type Keys (Netflix)", new int[]{COL_EMERALD, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
+        btnTypeKeys.setOnClickListener(v -> {
+            String txt = textInput.getText().toString();
+            if (txt.isEmpty()) return;
+            setStatus("Typing " + txt.length() + " keystrokes to " + dev.name + "...");
+            runSafeBg(() -> {
+                try {
+                    engine.typeTextAsKeystrokes(dev.id, dev.host, txt);
+                    runSafeUi(() -> {
+                        setStatus("Typed keystrokes to " + dev.name + ".");
+                        Toast.makeText(this, "Typed to " + dev.name, Toast.LENGTH_SHORT).show();
+                    });
+                } catch (Exception e) {
+                    runSafeUi(() -> setStatus("Type keys failed: " + e.getMessage()));
+                }
+            });
+        });
+
+        Button btnSendIme = makeControlSquare("Send Text (IME)", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
+        btnSendIme.setOnClickListener(v -> {
+            String txt = textInput.getText().toString();
+            if (txt.isEmpty()) return;
+            setStatus("Sending IME text to " + dev.name + "...");
+            runSafeBg(() -> {
+                try {
+                    engine.sendTextIme(dev.id, dev.host, txt);
+                    runSafeUi(() -> {
+                        setStatus("Sent text to " + dev.name + ".");
+                        Toast.makeText(this, "Sent text to " + dev.name, Toast.LENGTH_SHORT).show();
+                    });
+                } catch (Exception e) {
+                    runSafeUi(() -> setStatus("IME send failed: " + e.getMessage()));
+                }
+            });
+        });
+        box.addView(makeTwoUpRow(btnTypeKeys, btnSendIme, 10));
+
+        // D-Pad + Nav Remote
+        Runnable[] sendKeyAction = new Runnable[1];
+        java.util.function.LongConsumer sendKey = keyCode -> {
+            runSafeBg(() -> {
+                try {
+                    engine.sendRemoteKey(dev.id, dev.host, keyCode);
+                } catch (Exception e) {
+                    runSafeUi(() -> setStatus("Remote key failed: " + e.getMessage()));
+                }
+            });
+        };
+
+        Button btnUp = makeControlSquare("▲", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_NEON_CYAN, COL_SLATE_TOP);
+        btnUp.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_DPAD_UP));
+        LinearLayout.LayoutParams upLp = new LinearLayout.LayoutParams(dp(96), dp(46));
+        upLp.gravity = Gravity.CENTER_HORIZONTAL;
+        upLp.topMargin = dp(14);
+        btnUp.setLayoutParams(upLp);
+        box.addView(btnUp);
+
+        LinearLayout midRow = new LinearLayout(this);
+        midRow.setOrientation(LinearLayout.HORIZONTAL);
+        midRow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams midLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        midLp.topMargin = dp(6);
+        midRow.setLayoutParams(midLp);
+
+        Button btnLeft = makeControlSquare("◀", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_NEON_CYAN, COL_SLATE_TOP);
+        btnLeft.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_DPAD_LEFT));
+        Button btnOk = makeControlSquare("OK", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
+        btnOk.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_DPAD_CENTER));
+        Button btnRight = makeControlSquare("▶", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_NEON_CYAN, COL_SLATE_TOP);
+        btnRight.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_DPAD_RIGHT));
+
+        LinearLayout.LayoutParams navLp = new LinearLayout.LayoutParams(dp(84), dp(46));
+        navLp.setMargins(dp(4), 0, dp(4), 0);
+        btnLeft.setLayoutParams(navLp);
+        btnOk.setLayoutParams(navLp);
+        btnRight.setLayoutParams(navLp);
+        midRow.addView(btnLeft);
+        midRow.addView(btnOk);
+        midRow.addView(btnRight);
+        box.addView(midRow);
+
+        Button btnDown = makeControlSquare("▼", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_NEON_CYAN, COL_SLATE_TOP);
+        btnDown.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_DPAD_DOWN));
+        LinearLayout.LayoutParams dnLp = new LinearLayout.LayoutParams(dp(96), dp(46));
+        dnLp.gravity = Gravity.CENTER_HORIZONTAL;
+        dnLp.topMargin = dp(6);
+        btnDown.setLayoutParams(dnLp);
+        box.addView(btnDown);
+
+        Button btnBack = makeControlSquare("← Back", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+        btnBack.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_BACK));
+        Button btnHome = makeControlSquare("⌂ Home", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+        btnHome.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_HOME));
+        box.addView(makeTwoUpRow(btnBack, btnHome, 12));
+
+        Button btnDel = makeControlSquare("⌫ Backspace", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_AMBER, COL_SLATE_TOP);
+        btnDel.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_DEL));
+        Button btnEnter = makeControlSquare("↵ Enter / Submit", new int[]{COL_MAGENTA, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
+        btnEnter.setOnClickListener(v -> sendKey.accept(CastAndTvEngine.KEYCODE_ENTER));
+        box.addView(makeTwoUpRow(btnDel, btnEnter, 8));
+
+        new AlertDialog.Builder(this)
+                .setTitle("TV Keyboard & Remote · " + dev.name)
+                .setView(box)
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    // MARK: - Default Volume Dialog
 
     private void showDefaultVolumeDialog(DeviceItem dev) {
         int initialPct = dev.defaultVolumeLevel >= 0.0

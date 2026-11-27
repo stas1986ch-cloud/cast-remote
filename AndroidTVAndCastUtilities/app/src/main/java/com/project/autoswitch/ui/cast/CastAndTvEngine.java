@@ -56,9 +56,21 @@ public final class CastAndTvEngine {
     public static final String YOUTUBE_APP_ID = "233637DE";
     public static final int ATV_PAIRING_PORT = 6467;
     public static final int ATV_REMOTE_PORT = 6466;
+    public static final long KEYCODE_HOME = 3L;
+    public static final long KEYCODE_BACK = 4L;
+    public static final long KEYCODE_DPAD_UP = 19L;
+    public static final long KEYCODE_DPAD_DOWN = 20L;
+    public static final long KEYCODE_DPAD_LEFT = 21L;
+    public static final long KEYCODE_DPAD_RIGHT = 22L;
+    public static final long KEYCODE_DPAD_CENTER = 23L;
     public static final long KEYCODE_VOLUME_UP = 24L;
     public static final long KEYCODE_VOLUME_DOWN = 25L;
     public static final long KEYCODE_POWER = 26L;
+    public static final long KEYCODE_SHIFT_LEFT = 59L;
+    public static final long KEYCODE_SPACE = 62L;
+    public static final long KEYCODE_ENTER = 66L;
+    public static final long KEYCODE_DEL = 67L;
+    public static final long KEYCODE_MEDIA_PLAY_PAUSE = 85L;
     public static final long KEYCODE_VOLUME_MUTE = 164L;
     public static final long KEYCODE_SLEEP = 223L;
     public static final long KEYCODE_WAKEUP = 224L;
@@ -763,6 +775,150 @@ public final class CastAndTvEngine {
         activePairingSocket = null;
         activeServerCert = null;
         activePairingDeviceId = null;
+    }
+
+    /**
+     * Completes the Android TV Remote v2 port 6466 handshake and returns an active TLS socket.
+     */
+    private SSLSocket openConfiguredRemoteSession(String deviceId, String host) throws Exception {
+        if (host == null || host.isEmpty()) throw new IOException("TV IP unavailable");
+        if (!isPaired(deviceId)) throw new IOException("TV needs one-time PIN pairing");
+        SSLSocket sock = openMutualTls(host, ATV_REMOTE_PORT, 6000, null);
+        try {
+            boolean configured = false;
+            boolean activeSet = false;
+            for (int step = 0; step < 8; step++) {
+                byte[] msg = readAtvFramed(sock);
+                for (CastWire.Field f : CastWire.parseFields(msg)) {
+                    if (f.number == 1) {
+                        byte[] info = CastWire.concat(
+                                CastWire.stringField(1, Build.MODEL),
+                                CastWire.stringField(2, Build.MANUFACTURER),
+                                CastWire.varintField(3, 1),
+                                CastWire.stringField(4, "1"),
+                                CastWire.stringField(5, "com.screencontrol.cast"),
+                                CastWire.stringField(6, "3.8")
+                        );
+                        byte[] cfg = CastWire.concat(CastWire.varintField(1, 622), CastWire.bytesField(2, info));
+                        writeAtvFramed(sock, CastWire.bytesField(1, cfg));
+                        configured = true;
+                    } else if (f.number == 2) {
+                        writeAtvFramed(sock, CastWire.bytesField(2, CastWire.varintField(1, 622)));
+                        activeSet = true;
+                    } else if (f.number == 8 && f.isBytes && f.bytes != null) {
+                        long val1 = 0L;
+                        for (CastWire.Field pf : CastWire.parseFields(f.bytes)) {
+                            if (pf.number == 1 && !pf.isBytes) { val1 = pf.varint; break; }
+                        }
+                        writeAtvFramed(sock, CastWire.bytesField(9, CastWire.varintField(1, val1)));
+                    }
+                }
+                if (configured && activeSet) break;
+            }
+            return sock;
+        } catch (Exception e) {
+            try { sock.close(); } catch (Exception ignored) {}
+            throw e;
+        }
+    }
+
+    /**
+     * Sends a text/password string via Android TV Remote v2 RemoteImeBatchEdit (field 21).
+     * Works immediately in standard Android TV text fields.
+     */
+    public void sendTextIme(String deviceId, String host, String text) throws Exception {
+        if (text == null || text.isEmpty()) return;
+        try (SSLSocket sock = openConfiguredRemoteSession(deviceId, host)) {
+            byte[] imeObj = CastWire.concat(
+                    CastWire.varintField(1, 0),
+                    CastWire.varintField(2, 0),
+                    CastWire.stringField(3, text)
+            );
+            byte[] editInfo = CastWire.concat(
+                    CastWire.varintField(1, 1), // insert = 1
+                    CastWire.bytesField(2, imeObj)
+            );
+            byte[] batch = CastWire.concat(
+                    CastWire.varintField(1, 0),
+                    CastWire.varintField(2, 0),
+                    CastWire.bytesField(3, editInfo)
+            );
+            writeAtvFramed(sock, CastWire.bytesField(21, batch)); // remote_ime_batch_edit = 21
+            try { Thread.sleep(200); } catch (InterruptedException ignored) {}
+        }
+    }
+
+    /**
+     * Types text character-by-character as real hardware keystrokes (with Shift hold for uppercase/symbols).
+     * Ideal for apps like Netflix that ignore IME paste and only listen to keycodes.
+     */
+    public void typeTextAsKeystrokes(String deviceId, String host, String text) throws Exception {
+        if (text == null || text.isEmpty()) return;
+        try (SSLSocket sock = openConfiguredRemoteSession(deviceId, host)) {
+            for (int i = 0; i < text.length(); i++) {
+                char ch = text.charAt(i);
+                long[] mapped = mapCharToAndroidKeyCode(ch);
+                if (mapped == null) continue;
+                long code = mapped[0];
+                boolean needShift = mapped[1] == 1L;
+                if (needShift) {
+                    writeAtvFramed(sock, CastWire.bytesField(10,
+                            CastWire.concat(CastWire.varintField(1, KEYCODE_SHIFT_LEFT), CastWire.varintField(2, 1)))); // START_LONG
+                }
+                writeAtvFramed(sock, CastWire.bytesField(10,
+                        CastWire.concat(CastWire.varintField(1, code), CastWire.varintField(2, 3)))); // SHORT
+                if (needShift) {
+                    writeAtvFramed(sock, CastWire.bytesField(10,
+                            CastWire.concat(CastWire.varintField(1, KEYCODE_SHIFT_LEFT), CastWire.varintField(2, 2)))); // END_LONG
+                }
+                try { Thread.sleep(65); } catch (InterruptedException ignored) {}
+            }
+            try { Thread.sleep(150); } catch (InterruptedException ignored) {}
+        }
+    }
+
+    /** Maps ASCII printable chars to [androidKeyCode, needsShift (0 or 1)]. */
+    private static long[] mapCharToAndroidKeyCode(char ch) {
+        if (ch >= 'a' && ch <= 'z') return new long[]{29L + (ch - 'a'), 0L};
+        if (ch >= 'A' && ch <= 'Z') return new long[]{29L + (ch - 'A'), 1L};
+        if (ch >= '0' && ch <= '9') return new long[]{7L + (ch - '0'), 0L};
+        switch (ch) {
+            case ' ': return new long[]{KEYCODE_SPACE, 0L};
+            case '\n': return new long[]{KEYCODE_ENTER, 0L};
+            case '!': return new long[]{8L, 1L};   // Shift+1
+            case '@': return new long[]{77L, 0L};  // KEYCODE_AT
+            case '#': return new long[]{18L, 0L};  // KEYCODE_POUND
+            case '$': return new long[]{11L, 1L};  // Shift+4
+            case '%': return new long[]{12L, 1L};  // Shift+5
+            case '^': return new long[]{13L, 1L};  // Shift+6
+            case '&': return new long[]{14L, 1L};  // Shift+7
+            case '*': return new long[]{17L, 0L};  // KEYCODE_STAR
+            case '(': return new long[]{16L, 1L};  // Shift+9
+            case ')': return new long[]{7L, 1L};   // Shift+0
+            case '-': return new long[]{69L, 0L};  // KEYCODE_MINUS
+            case '_': return new long[]{69L, 1L};  // Shift+-
+            case '=': return new long[]{70L, 0L};  // KEYCODE_EQUALS
+            case '+': return new long[]{81L, 0L};  // KEYCODE_PLUS
+            case '[': return new long[]{71L, 0L};
+            case '{': return new long[]{71L, 1L};
+            case ']': return new long[]{72L, 0L};
+            case '}': return new long[]{72L, 1L};
+            case '\\': return new long[]{73L, 0L};
+            case '|': return new long[]{73L, 1L};
+            case ';': return new long[]{74L, 0L};
+            case ':': return new long[]{74L, 1L};
+            case '\'': return new long[]{75L, 0L};
+            case '"': return new long[]{75L, 1L};
+            case ',': return new long[]{55L, 0L};
+            case '<': return new long[]{55L, 1L};
+            case '.': return new long[]{56L, 0L};
+            case '>': return new long[]{56L, 1L};
+            case '/': return new long[]{76L, 0L};
+            case '?': return new long[]{76L, 1L};
+            case '`': return new long[]{68L, 0L};
+            case '~': return new long[]{68L, 1L};
+            default: return null;
+        }
     }
 
     public Boolean sendPower(String deviceId, String host, PowerAction action) throws Exception {
