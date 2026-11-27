@@ -41,17 +41,14 @@
         <TextView
             android:id="@+id/hub_title"
             android:layout_width="match_parent"
-            android:layout_height="32dp"
+            android:layout_height="wrap_content"
             android:gravity="center"
             android:letterSpacing="0.04"
-            android:maxLines="1"
+            android:maxLines="2"
             android:text="GOOGLE SCREEN CONTROL &amp; CAST"
             android:textColor="#00FFFF"
-            android:textStyle="bold"
-            app:autoSizeMaxTextSize="22sp"
-            app:autoSizeMinTextSize="11sp"
-            app:autoSizeStepGranularity="1sp"
-            app:autoSizeTextType="uniform" />
+            android:textSize="24sp"
+            android:textStyle="bold" />
 
         <View
             android:layout_width="160dp"

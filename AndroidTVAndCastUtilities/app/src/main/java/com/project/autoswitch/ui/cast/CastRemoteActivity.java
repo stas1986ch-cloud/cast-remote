@@ -75,6 +75,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private static final String KEY_COLLAPSED = "collapsed_device_ids_v1";
     private static final String KEY_HIDDEN = "hidden_device_ids_v1";
     private static final String KEY_AUTO_EXPAND_ON = "auto_expand_on_v1";
+    private static final String CONTROL_MENU_ID = "__control_mirror_menu__";
     private static final String CAST_TYPE = "_googlecast._tcp.";
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
@@ -808,13 +809,12 @@ public class CastRemoteActivity extends AppCompatActivity {
         TextView title = new TextView(this);
         title.setText("Google Screen Control & Cast");
         title.setTextColor(COL_NEON_CYAN);
+        title.setTextSize(20f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setMaxLines(1);
+        title.setMaxLines(2);
         title.setGravity(Gravity.CENTER);
         title.setPadding(dp(8), 0, dp(8), 0);
-        title.setLayoutParams(new LinearLayout.LayoutParams(0, dp(HEADER_PILL_HEIGHT_DP), 1f));
-        TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
-                title, 10, 17, 1, TypedValue.COMPLEX_UNIT_SP);
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         topBar.addView(title);
 
         Button btnLog = makeHeaderPill("Log", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_MUTED, Color.TRANSPARENT);
@@ -873,7 +873,34 @@ public class CastRemoteActivity extends AppCompatActivity {
         root.setPadding(dp(18), dp(14), dp(18), dp(32));
         scroll.addView(root);
 
-        // Merged Control & Mirror Menu Card
+        // Carved-out Hide/Show Tiles & Auto-Expand ON toolbar (always visible even if Control Menu is hidden)
+        autoExpandSwitchContainer = makeSwitchSquare("Auto-Expand ON", autoExpandOnDevices, null, this::toggleAutoExpandOn);
+        btnShowHiddenToggle = makeControlSquare("Hidden Tiles (0)", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_MUTED, COL_SLATE_TOP);
+        btnShowHiddenToggle.setOnClickListener(v -> {
+            showHiddenDevices = !showHiddenDevices;
+            updateHiddenButtonLabel();
+            renderDevices();
+        });
+        root.addView(makeTwoUpRow(autoExpandSwitchContainer, btnShowHiddenToggle, 0));
+        updateHiddenButtonLabel();
+
+        LinearLayout.LayoutParams listLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        listLp.topMargin = dp(12);
+        devicesContainer = new LinearLayout(this);
+        devicesContainer.setOrientation(LinearLayout.VERTICAL);
+        devicesContainer.setLayoutParams(listLp);
+        root.addView(devicesContainer);
+
+        return page;
+    }
+
+    private View buildControlMirrorMenuCard() {
+        boolean isHidden = hiddenIds.contains(CONTROL_MENU_ID);
+        boolean isExpanded = !collapsedIds.contains(CONTROL_MENU_ID);
+
+        String savedLinkText = linkInput != null ? linkInput.getText().toString() : "";
+
         LinearLayout menuCard = new LinearLayout(this);
         menuCard.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable menuBg = new GradientDrawable(
@@ -882,24 +909,111 @@ public class CastRemoteActivity extends AppCompatActivity {
         menuBg.setCornerRadius(dp(14));
         menuBg.setStroke(dp(1), COL_SLATE_TOP);
         menuCard.setBackground(menuBg);
-        menuCard.setPadding(dp(14), dp(14), dp(14), dp(14));
+        menuCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        if (isHidden) menuCard.setAlpha(0.60f);
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.bottomMargin = dp(12);
+        menuCard.setLayoutParams(cardLp);
+
+        // Drop target for drag-and-drop reordering
+        menuCard.setOnDragListener((v, event) -> {
+            switch (event.getAction()) {
+                case DragEvent.ACTION_DRAG_STARTED:
+                    return true;
+                case DragEvent.ACTION_DRAG_ENTERED:
+                    menuBg.setStroke(dp(2), COL_NEON_CYAN);
+                    return true;
+                case DragEvent.ACTION_DRAG_EXITED:
+                case DragEvent.ACTION_DRAG_ENDED:
+                    menuBg.setStroke(dp(1), COL_SLATE_TOP);
+                    return true;
+                case DragEvent.ACTION_DROP:
+                    menuBg.setStroke(dp(1), COL_SLATE_TOP);
+                    if (event.getLocalState() instanceof String) {
+                        reorderContainer((String) event.getLocalState(), CONTROL_MENU_ID);
+                    }
+                    return true;
+                default:
+                    return true;
+            }
+        });
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView dragHandle = new TextView(this);
+        dragHandle.setText("☰");
+        dragHandle.setTextColor(COL_MUTED);
+        dragHandle.setTextSize(16f);
+        dragHandle.setGravity(Gravity.CENTER);
+        dragHandle.setPadding(dp(4), dp(6), dp(8), dp(6));
+        dragHandle.setOnLongClickListener(v -> {
+            ClipData data = ClipData.newPlainText("container_id", CONTROL_MENU_ID);
+            View.DragShadowBuilder shadow = new View.DragShadowBuilder(menuCard);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                menuCard.startDragAndDrop(data, shadow, CONTROL_MENU_ID, 0);
+            } else {
+                @SuppressWarnings("deprecation")
+                boolean started = menuCard.startDrag(data, shadow, CONTROL_MENU_ID, 0);
+            }
+            return true;
+        });
+        dragHandle.setOnClickListener(v -> Toast.makeText(this, "Hold ☰ and drag to reorder containers", Toast.LENGTH_SHORT).show());
+        header.addView(dragHandle);
 
         TextView menuTitle = new TextView(this);
         menuTitle.setText("CONTROL & MIRROR MENU");
         menuTitle.setTextColor(COL_NEON_CYAN);
-        menuTitle.setTextSize(12f);
+        menuTitle.setTextSize(13.5f);
         menuTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        menuTitle.setPadding(0, 0, 0, dp(8));
-        menuCard.addView(menuTitle);
+        menuTitle.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        menuTitle.setOnClickListener(v -> toggleControlMenuCollapse());
+        header.addView(menuTitle);
+
+        Button btnCollapse = makeHeaderPill(
+                isExpanded ? "▾" : "▸",
+                new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                COL_NEON_CYAN,
+                Color.TRANSPARENT);
+        LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(dp(34), dp(HEADER_PILL_HEIGHT_DP));
+        colLp.rightMargin = dp(4);
+        btnCollapse.setLayoutParams(colLp);
+        btnCollapse.setPadding(0, 0, 0, 0);
+        btnCollapse.setOnClickListener(v -> toggleControlMenuCollapse());
+        header.addView(btnCollapse);
+
+        Button btnHide = makeHeaderPill(
+                isHidden ? "Show" : "Hide",
+                isHidden ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                isHidden ? Color.WHITE : COL_MUTED,
+                Color.TRANSPARENT);
+        btnHide.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(HEADER_PILL_HEIGHT_DP)));
+        btnHide.setOnClickListener(v -> toggleControlMenuHide());
+        header.addView(btnHide);
+
+        menuCard.addView(header);
+
+        if (!isExpanded) {
+            return menuCard;
+        }
 
         linkInput = new EditText(this);
-        linkInput.setHint("Paste a YouTube link (optional)");
+        linkInput.setHint("Paste YouTube or other non-DRM link (not Netflix-style links)");
         linkInput.setHintTextColor(COL_MUTED);
         linkInput.setTextColor(COL_TEXT);
+        linkInput.setTextSize(13f);
+        if (!savedLinkText.isEmpty()) linkInput.setText(savedLinkText);
         linkInput.setSingleLine(true);
         linkInput.setBackground(gradientButtonBg(new int[]{COL_BG, COL_BG}, COL_SLATE_TOP));
         linkInput.setPadding(dp(14), dp(12), dp(14), dp(12));
         linkInput.setFocusable(true);
+        LinearLayout.LayoutParams linkLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        linkLp.topMargin = dp(10);
+        linkInput.setLayoutParams(linkLp);
         menuCard.addView(linkInput);
 
         Button btnMirrorAll = makeControlSquare("Mirror All", new int[]{COL_VIOLET, COL_CYAN}, Color.WHITE, Color.TRANSPARENT);
@@ -924,27 +1038,36 @@ public class CastRemoteActivity extends AppCompatActivity {
         btnPowerOffAll.setOnClickListener(v -> powerOffAllDevices());
         menuCard.addView(makeTwoUpRow(receiveSwitchContainer, btnPowerOffAll, 8));
 
-        autoExpandSwitchContainer = makeSwitchSquare("Auto-Expand ON", autoExpandOnDevices, null, this::toggleAutoExpandOn);
-        btnShowHiddenToggle = makeControlSquare("Hidden (0)", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_MUTED, COL_SLATE_TOP);
-        btnShowHiddenToggle.setOnClickListener(v -> {
-            showHiddenDevices = !showHiddenDevices;
-            updateHiddenButtonLabel();
-            renderDevices();
-        });
-        menuCard.addView(makeTwoUpRow(autoExpandSwitchContainer, btnShowHiddenToggle, 8));
+        return menuCard;
+    }
+
+    private void toggleControlMenuCollapse() {
+        if (collapsedIds.contains(CONTROL_MENU_ID)) {
+            collapsedIds.remove(CONTROL_MENU_ID);
+        } else {
+            collapsedIds.add(CONTROL_MENU_ID);
+        }
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putStringSet(KEY_COLLAPSED, new HashSet<>(collapsedIds))
+                .apply();
+        renderDevices();
+    }
+
+    private void toggleControlMenuHide() {
+        if (hiddenIds.contains(CONTROL_MENU_ID)) {
+            hiddenIds.remove(CONTROL_MENU_ID);
+            setStatus("Restored Control & Mirror Menu.");
+        } else {
+            hiddenIds.add(CONTROL_MENU_ID);
+            setStatus("Hid Control & Mirror Menu (tap Hidden Tiles to restore).");
+        }
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putStringSet(KEY_HIDDEN, new HashSet<>(hiddenIds))
+                .apply();
         updateHiddenButtonLabel();
-
-        root.addView(menuCard);
-
-        LinearLayout.LayoutParams listLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        listLp.topMargin = dp(16);
-        devicesContainer = new LinearLayout(this);
-        devicesContainer.setOrientation(LinearLayout.VERTICAL);
-        devicesContainer.setLayoutParams(listLp);
-        root.addView(devicesContainer);
-
-        return page;
+        renderDevices();
     }
 
     // MARK: - Persistence
@@ -1425,21 +1548,46 @@ public class CastRemoteActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
-    private void reorderDevice(String draggedId, String targetId) {
+    private void reorderContainer(String draggedId, String targetId) {
         if (draggedId == null || targetId == null || draggedId.equals(targetId)) return;
-        List<DeviceItem> current = getAllDevicesSorted();
-        customOrder.clear();
-        for (DeviceItem d : current) {
-            if (!customOrder.contains(d.id)) customOrder.add(d.id);
-        }
-        int fromIdx = customOrder.indexOf(draggedId);
-        int toIdx = customOrder.indexOf(targetId);
+        List<String> currentOrder = buildCurrentTopLevelOrder();
+        int fromIdx = currentOrder.indexOf(draggedId);
+        int toIdx = currentOrder.indexOf(targetId);
         if (fromIdx < 0 || toIdx < 0) return;
-        customOrder.remove(fromIdx);
-        customOrder.add(toIdx, draggedId);
+        currentOrder.remove(fromIdx);
+        currentOrder.add(toIdx, draggedId);
+        customOrder.clear();
+        customOrder.addAll(currentOrder);
         saveCustomOrder();
-        setStatus("Reordered device container.");
+        setStatus("Reordered containers.");
         renderDevices();
+    }
+
+    private List<String> buildCurrentTopLevelOrder() {
+        List<String> order = new ArrayList<>();
+        if (customOrder.contains(CONTROL_MENU_ID)) {
+            // Respect custom order among CONTROL_MENU_ID and devices
+            List<DeviceItem> devs = getAllDevicesSorted();
+            List<String> allIds = new ArrayList<>();
+            allIds.add(CONTROL_MENU_ID);
+            for (DeviceItem d : devs) allIds.add(d.id);
+            for (String cid : customOrder) {
+                if (allIds.contains(cid) && !order.contains(cid)) order.add(cid);
+            }
+            for (String id : allIds) {
+                if (!order.contains(id)) order.add(id);
+            }
+        } else {
+            order.add(CONTROL_MENU_ID);
+            for (DeviceItem d : getAllDevicesSorted()) {
+                if (!order.contains(d.id)) order.add(d.id);
+            }
+        }
+        return order;
+    }
+
+    private void reorderDevice(String draggedId, String targetId) {
+        reorderContainer(draggedId, targetId);
     }
 
     private void toggleCollapse(DeviceItem dev) {
@@ -1503,11 +1651,11 @@ public class CastRemoteActivity extends AppCompatActivity {
         if (btnShowHiddenToggle == null) return;
         int count = hiddenIds.size();
         if (showHiddenDevices) {
-            btnShowHiddenToggle.setText("Showing Hidden (" + count + ")");
+            btnShowHiddenToggle.setText("Show Tiles · On (" + count + ")");
             btnShowHiddenToggle.setTextColor(Color.WHITE);
             btnShowHiddenToggle.setBackground(gradientButtonBg(new int[]{COL_AMBER, COL_VIOLET}, Color.TRANSPARENT));
         } else {
-            btnShowHiddenToggle.setText("Hidden (" + count + ")");
+            btnShowHiddenToggle.setText("Hidden Tiles (" + count + ")");
             btnShowHiddenToggle.setTextColor(count > 0 ? COL_AMBER : COL_MUTED);
             btnShowHiddenToggle.setBackground(gradientButtonBg(new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_SLATE_TOP));
         }
@@ -1645,20 +1793,39 @@ public class CastRemoteActivity extends AppCompatActivity {
         updateHiddenButtonLabel();
         List<DeviceItem> all = getAllDevicesSorted();
 
-        List<DeviceItem> tvList = new ArrayList<>();
+        Map<String, DeviceItem> tvById = new java.util.LinkedHashMap<>();
         List<DeviceItem> nonTvList = new ArrayList<>();
         for (DeviceItem dev : all) {
             if (!showHiddenDevices && hiddenIds.contains(dev.id)) continue;
             DeviceKind kind = classifyDevice(dev);
             if (isTvScreenDevice(dev, kind)) {
-                tvList.add(dev);
+                tvById.put(dev.id, dev);
             } else {
                 nonTvList.add(dev);
             }
         }
 
-        for (DeviceItem dev : tvList) {
-            devicesContainer.addView(buildDeviceCardView(dev));
+        // Render Control & Mirror Menu + TV/Screen containers in unified drag-and-drop order
+        List<String> topOrder = buildCurrentTopLevelOrder();
+        Set<String> rendered = new HashSet<>();
+        for (String id : topOrder) {
+            if (CONTROL_MENU_ID.equals(id)) {
+                if (showHiddenDevices || !hiddenIds.contains(CONTROL_MENU_ID)) {
+                    devicesContainer.addView(buildControlMirrorMenuCard());
+                }
+                rendered.add(CONTROL_MENU_ID);
+            } else if (tvById.containsKey(id)) {
+                devicesContainer.addView(buildDeviceCardView(tvById.get(id)));
+                rendered.add(id);
+            }
+        }
+        if (!rendered.contains(CONTROL_MENU_ID) && (showHiddenDevices || !hiddenIds.contains(CONTROL_MENU_ID))) {
+            devicesContainer.addView(buildControlMirrorMenuCard(), 0);
+        }
+        for (DeviceItem dev : tvById.values()) {
+            if (!rendered.contains(dev.id)) {
+                devicesContainer.addView(buildDeviceCardView(dev));
+            }
         }
 
         // Non-TV devices are only visible when explicitly expanded!

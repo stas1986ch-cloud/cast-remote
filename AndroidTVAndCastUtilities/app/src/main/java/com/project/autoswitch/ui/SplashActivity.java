@@ -23,6 +23,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -78,6 +79,20 @@ public class SplashActivity extends AppCompatActivity {
 
         isFromBoot = getIntent().getBooleanExtra("from_boot", false);
         returnToCaller = getIntent().getBooleanExtra("return_to_caller", false);
+
+        // Disable hardware/gesture Back button during the ad
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                // Intentionally disabled while splash ad is active
+            }
+        });
+
+        // Enforce 15-minute cooldown across cold restarts and reloads
+        if (!isFromBoot && !ScreenControlApp.canShowAdNow(this)) {
+            proceedToDestination();
+            return;
+        }
 
         btnSkipAd.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -159,6 +174,7 @@ public class SplashActivity extends AppCompatActivity {
 
     private void startAdDisplayCycle() {
         if (isFinishing() || isDestroyed() || hasProceeded) return;
+        ScreenControlApp.markAdShownNow(this);
 
         adContainer.setVisibility(View.VISIBLE);
         adContainer.setAlpha(1f);
@@ -270,7 +286,10 @@ public class SplashActivity extends AppCompatActivity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (canSkip && (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            return true; // Back button disabled during ad
+        }
+        if (canSkip && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)) {
             proceedToDestination();
             return true;
         }

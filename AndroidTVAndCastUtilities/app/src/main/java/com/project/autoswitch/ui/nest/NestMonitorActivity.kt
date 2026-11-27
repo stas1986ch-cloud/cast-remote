@@ -77,16 +77,14 @@ class NestMonitorActivity : AppCompatActivity() {
         val titleTv = TextView(this).apply {
             text = "NEST MONITOR"
             setTextColor(Color.parseColor("#00FFFF"))
+            textSize = 22f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            maxLines = 1
-            layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f).apply {
+            maxLines = 2
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
                 marginStart = dp(6)
                 marginEnd = dp(6)
             }
-            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
-                this, 11, 20, 1, TypedValue.COMPLEX_UNIT_SP
-            )
         }
         val refreshBtn = makePillButton("Refresh", "#0E7490", "#FFFFFF") { refreshThermostats() }
         topBar.addView(backBtn)

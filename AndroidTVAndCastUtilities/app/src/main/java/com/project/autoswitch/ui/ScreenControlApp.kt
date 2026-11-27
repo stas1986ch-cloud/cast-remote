@@ -1,24 +1,44 @@
 /**
  * @file ScreenControlApp.kt
- * @summary Application lifecycle tracker that ensures SplashActivity displays the AdMob ad every time the user reloads or returns to the app from background.
- * @description Counts started activities via ActivityLifecycleCallbacks and launches SplashActivity in return-to-caller mode whenever the app transitions from background (0 started) to foreground (1 started), skipping OAuth consent return windows.
- * @testing Verified via Gradle assembleRelease compilation and lifecycle transition guards.
+ * @summary Application lifecycle tracker enforcing a 15-minute maximum AdMob frequency across both cold starts and background reloads.
+ * @description Persists last_ad_shown_ms in SharedPreferences so ads appear at most once per 15 minutes even if the user closes and reopens the app repeatedly.
+ * @testing Verified via Gradle assembleRelease compilation and cooldown timestamp boundary logic.
  */
 package com.project.autoswitch.ui
 
 import android.app.Activity
 import android.app.Application
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 
 class ScreenControlApp : Application(), Application.ActivityLifecycleCallbacks {
     companion object {
+        private const val AD_PREFS = "AdCooldownPrefs"
+        private const val KEY_LAST_AD_MS = "last_ad_shown_ms"
+        const val AD_COOLDOWN_MS = 15L * 60_000L
+
         @Volatile
         private var suppressNextAdUntilMs: Long = 0L
 
         @JvmStatic
         fun suppressNextAdBriefly(durationMs: Long = 15_000L) {
             suppressNextAdUntilMs = System.currentTimeMillis() + durationMs
+        }
+
+        @JvmStatic
+        fun canShowAdNow(context: Context): Boolean {
+            val lastMs = context.getSharedPreferences(AD_PREFS, Context.MODE_PRIVATE)
+                .getLong(KEY_LAST_AD_MS, 0L)
+            return (System.currentTimeMillis() - lastMs) >= AD_COOLDOWN_MS
+        }
+
+        @JvmStatic
+        fun markAdShownNow(context: Context) {
+            context.getSharedPreferences(AD_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putLong(KEY_LAST_AD_MS, System.currentTimeMillis())
+                .apply()
         }
     }
 
@@ -35,7 +55,7 @@ class ScreenControlApp : Application(), Application.ActivityLifecycleCallbacks {
         if (startedCount == 0 && wasInBackground && !isChangingConfig) {
             wasInBackground = false
             val now = System.currentTimeMillis()
-            if (activity !is SplashActivity && now > suppressNextAdUntilMs) {
+            if (activity !is SplashActivity && now > suppressNextAdUntilMs && canShowAdNow(activity)) {
                 val adIntent = Intent(activity, SplashActivity::class.java).apply {
                     putExtra("return_to_caller", true)
                     addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
