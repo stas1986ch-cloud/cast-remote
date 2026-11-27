@@ -16,6 +16,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
+        android:name="com.project.autoswitch.ui.ScreenControlApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -70,6 +71,11 @@
 
         <service
             android:name="com.project.autoswitch.ui.AutoSwitchService"
+            android:enabled="true"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.project.autoswitch.ui.cast.ScheduledPowerOffReceiver"
             android:enabled="true"
             android:exported="false" />
 

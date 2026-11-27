@@ -7,6 +7,9 @@
 package com.project.autoswitch.ui.cast;
 
 import android.app.AlertDialog;
+import android.app.DatePickerDialog;
+import android.app.TimePickerDialog;
+import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -25,6 +28,8 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.TypedValue;
+import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -36,6 +41,8 @@ import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
+import androidx.core.widget.TextViewCompat;
+import java.util.Calendar;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
@@ -64,6 +71,10 @@ public class CastRemoteActivity extends AppCompatActivity {
     private static final String KEY_DEFAULT_VOLUMES = "device_default_volumes_v1";
     private static final String KEY_LINKED_HOME = "linked_cast_home_keys_v1";
     private static final String KEY_UNSUPPORTED_POWER = "unsupported_power_devices_v1";
+    private static final String KEY_CUSTOM_ORDER = "device_custom_order_v1";
+    private static final String KEY_COLLAPSED = "collapsed_device_ids_v1";
+    private static final String KEY_HIDDEN = "hidden_device_ids_v1";
+    private static final String KEY_AUTO_EXPAND_ON = "auto_expand_on_v1";
     private static final String CAST_TYPE = "_googlecast._tcp.";
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
@@ -152,6 +163,15 @@ public class CastRemoteActivity extends AppCompatActivity {
     private final Map<String, String> linkedHomeKeys = new ConcurrentHashMap<>();
     private final Map<String, String> unsupportedPowerNotes = new ConcurrentHashMap<>();
     private Set<String> pinnedIds = new HashSet<>();
+    private List<String> customOrder = new ArrayList<>();
+    private Set<String> collapsedIds = new HashSet<>();
+    private Set<String> hiddenIds = new HashSet<>();
+    private Set<String> manualExpandOverrides = new HashSet<>();
+    private boolean autoExpandOnDevices = true;
+    private boolean showHiddenDevices = false;
+    private boolean nonTvSectionExpanded = false;
+    private LinearLayout autoExpandSwitchContainer;
+    private Button btnShowHiddenToggle;
 
     private CastAndTvEngine engine;
     private NsdManager nsdManager;
@@ -177,6 +197,10 @@ public class CastRemoteActivity extends AppCompatActivity {
         nsdManager = (NsdManager) getSystemService(Context.NSD_SERVICE);
         SharedPreferences prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         pinnedIds = new HashSet<>(prefs.getStringSet(KEY_PINNED, new HashSet<>()));
+        collapsedIds = new HashSet<>(prefs.getStringSet(KEY_COLLAPSED, new HashSet<>()));
+        hiddenIds = new HashSet<>(prefs.getStringSet(KEY_HIDDEN, new HashSet<>()));
+        autoExpandOnDevices = prefs.getBoolean(KEY_AUTO_EXPAND_ON, true);
+        loadCustomOrder();
 
         setContentView(buildUi());
         loadDefaultVolumes();
@@ -782,14 +806,15 @@ public class CastRemoteActivity extends AppCompatActivity {
         topBar.addView(btnBack);
 
         TextView title = new TextView(this);
-        title.setText("Cast Device Controls");
+        title.setText("Google Screen Control & Cast");
         title.setTextColor(COL_NEON_CYAN);
-        title.setTextSize(17.5f);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setSingleLine(true);
+        title.setMaxLines(1);
         title.setGravity(Gravity.CENTER);
         title.setPadding(dp(8), 0, dp(8), 0);
-        title.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        title.setLayoutParams(new LinearLayout.LayoutParams(0, dp(HEADER_PILL_HEIGHT_DP), 1f));
+        TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                title, 10, 17, 1, TypedValue.COMPLEX_UNIT_SP);
         topBar.addView(title);
 
         Button btnLog = makeHeaderPill("Log", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_MUTED, Color.TRANSPARENT);
@@ -898,6 +923,16 @@ public class CastRemoteActivity extends AppCompatActivity {
         Button btnPowerOffAll = makeControlSquare("Power Off TVs", new int[]{COL_CRIMSON, COL_MAGENTA}, Color.WHITE, Color.TRANSPARENT);
         btnPowerOffAll.setOnClickListener(v -> powerOffAllDevices());
         menuCard.addView(makeTwoUpRow(receiveSwitchContainer, btnPowerOffAll, 8));
+
+        autoExpandSwitchContainer = makeSwitchSquare("Auto-Expand ON", autoExpandOnDevices, null, this::toggleAutoExpandOn);
+        btnShowHiddenToggle = makeControlSquare("Hidden (0)", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_MUTED, COL_SLATE_TOP);
+        btnShowHiddenToggle.setOnClickListener(v -> {
+            showHiddenDevices = !showHiddenDevices;
+            updateHiddenButtonLabel();
+            renderDevices();
+        });
+        menuCard.addView(makeTwoUpRow(autoExpandSwitchContainer, btnShowHiddenToggle, 8));
+        updateHiddenButtonLabel();
 
         root.addView(menuCard);
 
@@ -1364,6 +1399,219 @@ public class CastRemoteActivity extends AppCompatActivity {
         return val != null ? new String(val, StandardCharsets.UTF_8) : null;
     }
 
+    // MARK: - Container Order, Collapse/Hide, Auto-Expand ON, & Schedule Off
+
+    private void loadCustomOrder() {
+        customOrder.clear();
+        try {
+            String raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_CUSTOM_ORDER, null);
+            if (raw == null || raw.isEmpty()) return;
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                String id = arr.optString(i, "");
+                if (!id.isEmpty() && !customOrder.contains(id)) customOrder.add(id);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void saveCustomOrder() {
+        try {
+            JSONArray arr = new JSONArray();
+            for (String id : customOrder) arr.put(id);
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_CUSTOM_ORDER, arr.toString())
+                    .apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void reorderDevice(String draggedId, String targetId) {
+        if (draggedId == null || targetId == null || draggedId.equals(targetId)) return;
+        List<DeviceItem> current = getAllDevicesSorted();
+        customOrder.clear();
+        for (DeviceItem d : current) {
+            if (!customOrder.contains(d.id)) customOrder.add(d.id);
+        }
+        int fromIdx = customOrder.indexOf(draggedId);
+        int toIdx = customOrder.indexOf(targetId);
+        if (fromIdx < 0 || toIdx < 0) return;
+        customOrder.remove(fromIdx);
+        customOrder.add(toIdx, draggedId);
+        saveCustomOrder();
+        setStatus("Reordered device container.");
+        renderDevices();
+    }
+
+    private void toggleCollapse(DeviceItem dev) {
+        manualExpandOverrides.add(dev.id);
+        boolean currentlyExpanded = isDeviceExpanded(dev);
+        if (currentlyExpanded) {
+            collapsedIds.add(dev.id);
+        } else {
+            collapsedIds.remove(dev.id);
+        }
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putStringSet(KEY_COLLAPSED, new HashSet<>(collapsedIds))
+                .apply();
+        renderDevices();
+    }
+
+    private boolean isDeviceExpanded(DeviceItem dev) {
+        if (autoExpandOnDevices && !manualExpandOverrides.contains(dev.id)) {
+            return dev.powerOn || "PLAYING".equals(dev.state) || "PAUSED".equals(dev.state) || "BUFFERING".equals(dev.state);
+        }
+        return !collapsedIds.contains(dev.id);
+    }
+
+    private void toggleHide(DeviceItem dev) {
+        if (hiddenIds.contains(dev.id)) {
+            hiddenIds.remove(dev.id);
+            setStatus("Unhid " + dev.name + ".");
+        } else {
+            hiddenIds.add(dev.id);
+            setStatus("Hid " + dev.name + " (tap Hidden in menu to restore).");
+        }
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putStringSet(KEY_HIDDEN, new HashSet<>(hiddenIds))
+                .apply();
+        updateHiddenButtonLabel();
+        renderDevices();
+    }
+
+    private void toggleAutoExpandOn() {
+        autoExpandOnDevices = !autoExpandOnDevices;
+        manualExpandOverrides.clear();
+        getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_AUTO_EXPAND_ON, autoExpandOnDevices)
+                .apply();
+        if (autoExpandSwitchContainer != null && autoExpandSwitchContainer.getChildCount() >= 2) {
+            View sw = autoExpandSwitchContainer.getChildAt(1);
+            if (sw instanceof SwitchCompat) {
+                ((SwitchCompat) sw).setChecked(autoExpandOnDevices);
+            }
+            int[] cols = autoExpandOnDevices ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT};
+            autoExpandSwitchContainer.setBackground(gradientButtonBg(cols, autoExpandOnDevices ? Color.TRANSPARENT : COL_SLATE_TOP));
+        }
+        setStatus(autoExpandOnDevices ? "Auto-expand ON devices enabled." : "Manual container expand/shrink mode.");
+        renderDevices();
+    }
+
+    private void updateHiddenButtonLabel() {
+        if (btnShowHiddenToggle == null) return;
+        int count = hiddenIds.size();
+        if (showHiddenDevices) {
+            btnShowHiddenToggle.setText("Showing Hidden (" + count + ")");
+            btnShowHiddenToggle.setTextColor(Color.WHITE);
+            btnShowHiddenToggle.setBackground(gradientButtonBg(new int[]{COL_AMBER, COL_VIOLET}, Color.TRANSPARENT));
+        } else {
+            btnShowHiddenToggle.setText("Hidden (" + count + ")");
+            btnShowHiddenToggle.setTextColor(count > 0 ? COL_AMBER : COL_MUTED);
+            btnShowHiddenToggle.setBackground(gradientButtonBg(new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_SLATE_TOP));
+        }
+    }
+
+    private boolean isTvScreenDevice(DeviceItem dev, DeviceKind kind) {
+        if (kind == DeviceKind.TV || kind == DeviceKind.PROJECTOR || kind == DeviceKind.DISPLAY) {
+            return true;
+        }
+        if (dev.isPhone) return false;
+        return dev.hasCast && kind != DeviceKind.SPEAKER;
+    }
+
+    private void showSchedulePowerOffDialog(DeviceItem dev) {
+        ScheduledOffEntry existing = ScheduledPowerOffManager.getSchedule(this, dev.id);
+        List<String> labels = new ArrayList<>();
+        labels.add("In 30 minutes");
+        labels.add("In 1 hour");
+        labels.add("In 2 hours");
+        labels.add("Pick custom date & time...");
+        if (existing != null) {
+            labels.add("Cancel scheduled off (" + ScheduledPowerOffManager.formatTriggerTime(existing.getTriggerAtMs()) + ")");
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Schedule Turn Off · " + dev.name)
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    long now = System.currentTimeMillis();
+                    if (which == 0) {
+                        applyScheduledOff(dev, now + 30L * 60_000L);
+                    } else if (which == 1) {
+                        applyScheduledOff(dev, now + 60L * 60_000L);
+                    } else if (which == 2) {
+                        applyScheduledOff(dev, now + 120L * 60_000L);
+                    } else if (which == 3) {
+                        pickCustomDateTimeForOff(dev);
+                    } else if (existing != null && which == 4) {
+                        ScheduledPowerOffManager.cancelSchedule(this, dev.id);
+                        setStatus("Cancelled scheduled turn off for " + dev.name + ".");
+                        renderDevices();
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private void pickCustomDateTimeForOff(DeviceItem dev) {
+        Calendar cal = Calendar.getInstance();
+        cal.add(Calendar.MINUTE, 30);
+        new DatePickerDialog(this, (view, year, month, dayOfMonth) -> {
+            Calendar chosen = Calendar.getInstance();
+            chosen.set(Calendar.YEAR, year);
+            chosen.set(Calendar.MONTH, month);
+            chosen.set(Calendar.DAY_OF_MONTH, dayOfMonth);
+            new TimePickerDialog(this, (tp, hourOfDay, minute) -> {
+                chosen.set(Calendar.HOUR_OF_DAY, hourOfDay);
+                chosen.set(Calendar.MINUTE, minute);
+                chosen.set(Calendar.SECOND, 0);
+                chosen.set(Calendar.MILLISECOND, 0);
+                if (chosen.getTimeInMillis() <= System.currentTimeMillis() + 10_000L) {
+                    Toast.makeText(this, "Pick a time in the future.", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                applyScheduledOff(dev, chosen.getTimeInMillis());
+            }, cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE), false).show();
+        }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH), cal.get(Calendar.DAY_OF_MONTH)).show();
+    }
+
+    private void applyScheduledOff(DeviceItem dev, long triggerAtMs) {
+        ScheduledPowerOffManager.schedulePowerOff(
+                this, dev.id, dev.name,
+                dev.homeKey != null ? dev.homeKey : "",
+                dev.host != null ? dev.host : "",
+                dev.port,
+                triggerAtMs);
+        String formatted = ScheduledPowerOffManager.formatTriggerTime(triggerAtMs);
+        setStatus("Scheduled " + dev.name + " to turn OFF at " + formatted + ".");
+        Toast.makeText(this, dev.name + " scheduled OFF · " + formatted, Toast.LENGTH_SHORT).show();
+        renderDevices();
+    }
+
+    private List<DeviceItem> getAllDevicesSorted() {
+        List<DeviceItem> all = new ArrayList<>();
+        all.addAll(castDevices.values());
+        all.addAll(phoneDevices.values());
+        all.addAll(homeDevices.values());
+        Collections.sort(all, new Comparator<DeviceItem>() {
+            @Override
+            public int compare(DeviceItem a, DeviceItem b) {
+                boolean pa = pinnedIds.contains(a.id);
+                boolean pb = pinnedIds.contains(b.id);
+                if (pa != pb) return pa ? -1 : 1;
+                int ia = customOrder.indexOf(a.id);
+                int ib = customOrder.indexOf(b.id);
+                if (ia >= 0 && ib >= 0 && ia != ib) return Integer.compare(ia, ib);
+                if (ia >= 0 && ib < 0) return -1;
+                if (ib >= 0 && ia < 0) return 1;
+                if (a.hasCast != b.hasCast) return a.hasCast ? -1 : 1;
+                return a.name.toLowerCase(Locale.US).compareTo(b.name.toLowerCase(Locale.US));
+            }
+        });
+        return all;
+    }
+
     // MARK: - Card Rendering
 
     private void togglePin(DeviceItem dev) {
@@ -1394,175 +1642,301 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private void renderDevices() {
         devicesContainer.removeAllViews();
-        List<DeviceItem> all = new ArrayList<>();
-        all.addAll(castDevices.values());
-        all.addAll(phoneDevices.values());
-        all.addAll(homeDevices.values());
-        Collections.sort(all, new Comparator<DeviceItem>() {
-            @Override
-            public int compare(DeviceItem a, DeviceItem b) {
-                boolean pa = pinnedIds.contains(a.id);
-                boolean pb = pinnedIds.contains(b.id);
-                if (pa != pb) return pa ? -1 : 1;
-                if (a.hasCast != b.hasCast) return a.hasCast ? -1 : 1;
-                return a.name.toLowerCase(Locale.US).compareTo(b.name.toLowerCase(Locale.US));
+        updateHiddenButtonLabel();
+        List<DeviceItem> all = getAllDevicesSorted();
+
+        List<DeviceItem> tvList = new ArrayList<>();
+        List<DeviceItem> nonTvList = new ArrayList<>();
+        for (DeviceItem dev : all) {
+            if (!showHiddenDevices && hiddenIds.contains(dev.id)) continue;
+            DeviceKind kind = classifyDevice(dev);
+            if (isTvScreenDevice(dev, kind)) {
+                tvList.add(dev);
+            } else {
+                nonTvList.add(dev);
+            }
+        }
+
+        for (DeviceItem dev : tvList) {
+            devicesContainer.addView(buildDeviceCardView(dev));
+        }
+
+        // Non-TV devices are only visible when explicitly expanded!
+        if (!nonTvList.isEmpty()) {
+            Button nonTvHeader = makeControlSquare(
+                    (nonTvSectionExpanded ? "▾  Hide Other Smart Home Devices (" : "▸  Other Smart Home Devices (")
+                            + nonTvList.size() + ")",
+                    nonTvSectionExpanded ? new int[]{COL_VIOLET, COL_SLATE_TOP} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                    COL_NEON_CYAN,
+                    COL_SLATE_TOP);
+            LinearLayout.LayoutParams hdrLp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, dp(46));
+            hdrLp.topMargin = dp(8);
+            hdrLp.bottomMargin = dp(10);
+            nonTvHeader.setLayoutParams(hdrLp);
+            nonTvHeader.setOnClickListener(v -> {
+                nonTvSectionExpanded = !nonTvSectionExpanded;
+                renderDevices();
+            });
+            devicesContainer.addView(nonTvHeader);
+
+            if (nonTvSectionExpanded) {
+                for (DeviceItem dev : nonTvList) {
+                    devicesContainer.addView(buildDeviceCardView(dev));
+                }
+            }
+        }
+    }
+
+    private View buildDeviceCardView(DeviceItem dev) {
+        dev.defaultVolumeLevel = lookupDefaultVolume(dev);
+        boolean isPinned = pinnedIds.contains(dev.id);
+        boolean isHidden = hiddenIds.contains(dev.id);
+        boolean isExpanded = isDeviceExpanded(dev);
+        boolean isPaired = !dev.isPhone && dev.hasCast && engine.isPaired(dev.id);
+        DeviceKind kind = classifyDevice(dev);
+        String liveState = displayStatusLabel(dev);
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable cardBg = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{COL_CARD, Color.parseColor("#101626")});
+        cardBg.setCornerRadius(dp(14));
+        cardBg.setStroke(dp(isPinned ? 2 : 1), isPinned ? COL_AMBER : COL_SLATE_TOP);
+        card.setBackground(cardBg);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        if (isHidden) card.setAlpha(0.60f);
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.bottomMargin = dp(12);
+        card.setLayoutParams(cardLp);
+
+        // Drag-and-drop drop target on every device container
+        card.setOnDragListener((v, event) -> {
+            switch (event.getAction()) {
+                case DragEvent.ACTION_DRAG_STARTED:
+                    return true;
+                case DragEvent.ACTION_DRAG_ENTERED:
+                    cardBg.setStroke(dp(2), COL_NEON_CYAN);
+                    return true;
+                case DragEvent.ACTION_DRAG_EXITED:
+                case DragEvent.ACTION_DRAG_ENDED:
+                    cardBg.setStroke(dp(isPinned ? 2 : 1), isPinned ? COL_AMBER : COL_SLATE_TOP);
+                    return true;
+                case DragEvent.ACTION_DROP:
+                    cardBg.setStroke(dp(isPinned ? 2 : 1), isPinned ? COL_AMBER : COL_SLATE_TOP);
+                    if (event.getLocalState() instanceof String) {
+                        reorderDevice((String) event.getLocalState(), dev.id);
+                    }
+                    return true;
+                default:
+                    return true;
             }
         });
 
-        for (DeviceItem dev : all) {
-            dev.defaultVolumeLevel = lookupDefaultVolume(dev);
-            boolean isPinned = pinnedIds.contains(dev.id);
-            boolean isPaired = !dev.isPhone && dev.hasCast && engine.isPaired(dev.id);
-            DeviceKind kind = classifyDevice(dev);
-            String liveState = displayStatusLabel(dev);
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
 
-            LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            GradientDrawable cardBg = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    new int[]{COL_CARD, Color.parseColor("#101626")});
-            cardBg.setCornerRadius(dp(14));
-            cardBg.setStroke(dp(isPinned ? 2 : 1), isPinned ? COL_AMBER : COL_SLATE_TOP);
-            card.setBackground(cardBg);
-            card.setPadding(dp(14), dp(14), dp(14), dp(14));
-            LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            cardLp.bottomMargin = dp(12);
-            card.setLayoutParams(cardLp);
+        // Drag Handle (long-press or touch-drag to reorder containers)
+        TextView dragHandle = new TextView(this);
+        dragHandle.setText("☰");
+        dragHandle.setTextColor(COL_MUTED);
+        dragHandle.setTextSize(16f);
+        dragHandle.setGravity(Gravity.CENTER);
+        dragHandle.setPadding(dp(4), dp(6), dp(8), dp(6));
+        dragHandle.setOnLongClickListener(v -> {
+            ClipData data = ClipData.newPlainText("device_id", dev.id);
+            View.DragShadowBuilder shadow = new View.DragShadowBuilder(card);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                card.startDragAndDrop(data, shadow, dev.id, 0);
+            } else {
+                @SuppressWarnings("deprecation")
+                boolean started = card.startDrag(data, shadow, dev.id, 0);
+            }
+            return true;
+        });
+        dragHandle.setOnClickListener(v -> Toast.makeText(this, "Hold ☰ and drag onto another card to reorder", Toast.LENGTH_SHORT).show());
+        header.addView(dragHandle);
 
-            LinearLayout header = new LinearLayout(this);
-            header.setOrientation(LinearLayout.HORIZONTAL);
-            header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView iconBadge = new TextView(this);
+        iconBadge.setText(iconGlyphForKind(kind));
+        iconBadge.setTextSize(17f);
+        iconBadge.setGravity(Gravity.CENTER);
+        GradientDrawable badgeBg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, badgeColorsForKind(kind));
+        badgeBg.setCornerRadius(dp(10));
+        iconBadge.setBackground(badgeBg);
+        LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dp(36), dp(36));
+        badgeLp.rightMargin = dp(8);
+        iconBadge.setLayoutParams(badgeLp);
+        header.addView(iconBadge);
 
-            TextView iconBadge = new TextView(this);
-            iconBadge.setText(iconGlyphForKind(kind));
-            iconBadge.setTextSize(18f);
-            iconBadge.setGravity(Gravity.CENTER);
-            GradientDrawable badgeBg = new GradientDrawable(GradientDrawable.Orientation.TL_BR, badgeColorsForKind(kind));
-            badgeBg.setCornerRadius(dp(10));
-            iconBadge.setBackground(badgeBg);
-            LinearLayout.LayoutParams badgeLp = new LinearLayout.LayoutParams(dp(40), dp(40));
-            badgeLp.rightMargin = dp(10);
-            iconBadge.setLayoutParams(badgeLp);
-            header.addView(iconBadge);
+        LinearLayout titleCol = new LinearLayout(this);
+        titleCol.setOrientation(LinearLayout.VERTICAL);
+        titleCol.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        titleCol.setOnClickListener(v -> toggleCollapse(dev));
 
-            LinearLayout titleCol = new LinearLayout(this);
-            titleCol.setOrientation(LinearLayout.VERTICAL);
-            titleCol.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView nameView = new TextView(this);
+        nameView.setText(dev.name);
+        nameView.setTextColor("PLAYING".equals(liveState) ? COL_NEON_CYAN
+                : (dev.isPhone ? COL_MAGENTA : (dev.powerOn ? COL_TEXT : COL_MUTED)));
+        nameView.setTextSize(14.5f);
+        nameView.setTypeface(Typeface.DEFAULT_BOLD);
+        nameView.setMaxLines(1);
+        titleCol.addView(nameView);
 
-            TextView nameView = new TextView(this);
-            nameView.setText(dev.name);
-            nameView.setTextColor("PLAYING".equals(liveState) ? COL_NEON_CYAN
-                    : (dev.isPhone ? COL_MAGENTA : (dev.powerOn ? COL_TEXT : COL_MUTED)));
-            nameView.setTextSize(15f);
-            nameView.setTypeface(Typeface.DEFAULT_BOLD);
-            titleCol.addView(nameView);
+        TextView subView = new TextView(this);
+        ScheduledOffEntry sched = ScheduledPowerOffManager.getSchedule(this, dev.id);
+        String schedExtra = sched != null ? (" · ⏰ " + ScheduledPowerOffManager.formatTriggerTime(sched.getTriggerAtMs())) : "";
+        String defVolExtra = dev.defaultVolumeLevel >= 0.0
+                ? (" · Vol " + Math.round(dev.defaultVolumeLevel * 100.0) + "%") : "";
+        String mediaExtra = (dev.title != null && !dev.title.isEmpty() && dev.powerOn) ? " · " + dev.title : "";
+        subView.setText(labelForKind(dev, kind) + " · " + liveState + schedExtra + defVolExtra + mediaExtra);
+        subView.setTextColor(sched != null ? COL_AMBER : (dev.powerOn ? COL_EMERALD : COL_MUTED));
+        subView.setTextSize(11f);
+        titleCol.addView(subView);
+        header.addView(titleCol);
 
-            TextView subView = new TextView(this);
-            String defVolExtra = dev.defaultVolumeLevel >= 0.0
-                    ? (" · Default " + Math.round(dev.defaultVolumeLevel * 100.0) + "%") : "";
-            String mediaExtra = (dev.title != null && !dev.title.isEmpty() && dev.powerOn) ? " · " + dev.title : "";
-            subView.setText(labelForKind(dev, kind) + " · " + liveState + defVolExtra + mediaExtra);
-            subView.setTextColor(dev.powerOn ? COL_EMERALD : COL_MUTED);
-            subView.setTextSize(11.5f);
-            titleCol.addView(subView);
-            header.addView(titleCol);
+        // Shrink/Expand Pill
+        Button btnCollapse = makeHeaderPill(
+                isExpanded ? "▾" : "▸",
+                new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                COL_NEON_CYAN,
+                Color.TRANSPARENT);
+        LinearLayout.LayoutParams colLp = new LinearLayout.LayoutParams(dp(34), dp(HEADER_PILL_HEIGHT_DP));
+        colLp.rightMargin = dp(4);
+        btnCollapse.setLayoutParams(colLp);
+        btnCollapse.setPadding(0, 0, 0, 0);
+        btnCollapse.setOnClickListener(v -> toggleCollapse(dev));
+        header.addView(btnCollapse);
+
+        // Hide / Unhide Pill
+        Button btnHide = makeHeaderPill(
+                isHidden ? "Show" : "Hide",
+                isHidden ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                isHidden ? Color.WHITE : COL_MUTED,
+                Color.TRANSPARENT);
+        LinearLayout.LayoutParams hideLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(HEADER_PILL_HEIGHT_DP));
+        hideLp.rightMargin = dp(4);
+        btnHide.setLayoutParams(hideLp);
+        btnHide.setOnClickListener(v -> toggleHide(dev));
+        header.addView(btnHide);
+
+        Button btnPin = makeHeaderPill(
+                isPinned ? "★" : "☆",
+                isPinned ? new int[]{COL_AMBER, COL_MAGENTA} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                isPinned ? Color.WHITE : COL_MUTED,
+                Color.TRANSPARENT);
+        btnPin.setLayoutParams(new LinearLayout.LayoutParams(dp(36), dp(HEADER_PILL_HEIGHT_DP)));
+        btnPin.setPadding(0, 0, 0, 0);
+        btnPin.setOnClickListener(v -> togglePin(dev));
+        header.addView(btnPin);
+        card.addView(header);
+
+        if (!isExpanded) {
+            return card;
+        }
+
+        // Row 1: Cast / Peer YouTube Play & Mirror
+        if (dev.hasCast || dev.isPhone) {
+            Button btnPlay = makeControlSquare("Play Here", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
+            btnPlay.setOnClickListener(v -> playOnDevice(dev));
+
+            Button btnMirror = makeControlSquare("Mirror Here", new int[]{COL_MAGENTA, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
+            btnMirror.setOnClickListener(v -> mirrorTargets(dev));
+            card.addView(makeTwoUpRow(btnPlay, btnMirror, 10));
+        }
+
+        // Row 2: Stateful Wake / Turn Off Toggle (or Grayed-Out Unsupported w/ Chromecast 1)
+        boolean showGrayedPowerOff = dev.powerOffUnsupported && !isPaired;
+        LinearLayout powerSwitchBox;
+        if (showGrayedPowerOff) {
+            String unsupNote = (dev.powerOffNote != null && !dev.powerOffNote.isEmpty())
+                    ? dev.powerOffNote : "Unsupported w/ Chromecast 1";
+            powerSwitchBox = makeDisabledPowerSquare("Power Off (N/A)", unsupNote, () -> {
+                setStatus(dev.name + ": Power Off is " + unsupNote + ".");
+                Toast.makeText(this, dev.name + ": " + unsupNote, Toast.LENGTH_SHORT).show();
+            });
+        } else {
+            powerSwitchBox = makeSwitchSquare(
+                    displayPowerLabel(dev),
+                    dev.powerOn,
+                    null,
+                    () -> togglePowerDevice(dev));
+        }
+
+        if (dev.hasCast && !dev.isPhone) {
+            Button btnStop = makeControlSquare("Stop Cast", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+            btnStop.setOnClickListener(v -> stopDevice(dev));
+            card.addView(makeTwoUpRow(powerSwitchBox, btnStop, 8));
+        } else if (!dev.hasCast && !dev.isPhone && isMediaKind(kind)) {
+            String defLabel = dev.defaultVolumeLevel >= 0.0
+                    ? ("★ Default · " + Math.round(dev.defaultVolumeLevel * 100.0) + "%")
+                    : "Set Default %";
+            int[] defCols = dev.defaultVolumeLevel >= 0.0
+                    ? new int[]{COL_AMBER, COL_VIOLET}
+                    : new int[]{COL_SLATE_TOP, COL_SLATE_BOT};
+            Button btnPresetVol = makeControlSquare(defLabel, defCols, Color.WHITE,
+                    dev.defaultVolumeLevel >= 0.0 ? Color.TRANSPARENT : COL_SLATE_TOP);
+            btnPresetVol.setOnClickListener(v -> showDefaultVolumeDialog(dev));
+            card.addView(makeTwoUpRow(powerSwitchBox, btnPresetVol, 10));
+        } else {
+            Button btnSync = makeControlSquare("Sync State", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
+            btnSync.setOnClickListener(v -> {
+                setStatus("Syncing " + dev.name + "...");
+                refreshDevices(true);
+            });
+            card.addView(makeTwoUpRow(powerSwitchBox, btnSync, dev.isPhone ? 8 : 10));
+        }
+
+        // Row 2b: Schedule Turn Off & Pair TV (if applicable)
+        if (!dev.isPhone) {
+            String schedLabel = sched != null
+                    ? ("⏰ Off · " + ScheduledPowerOffManager.formatTriggerTime(sched.getTriggerAtMs()))
+                    : "⏰ Schedule Off";
+            int[] schedCols = sched != null
+                    ? new int[]{COL_AMBER, COL_CRIMSON}
+                    : new int[]{COL_SLATE_TOP, COL_SLATE_BOT};
+            Button btnSched = makeControlSquare(schedLabel, schedCols, Color.WHITE,
+                    sched != null ? Color.TRANSPARENT : COL_SLATE_TOP);
+            btnSched.setOnClickListener(v -> showSchedulePowerOffDialog(dev));
 
             if (supportsPairButton(dev, kind)) {
-                Button btnPair = makeHeaderPill(
-                        isPaired ? "Paired ✓" : "Pair",
+                Button btnPair = makeControlSquare(
+                        isPaired ? "Paired ✓" : "Pair TV Remote",
                         isPaired ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
                         Color.WHITE,
-                        Color.TRANSPARENT);
-                LinearLayout.LayoutParams pairLp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT, dp(HEADER_PILL_HEIGHT_DP));
-                pairLp.rightMargin = dp(6);
-                btnPair.setLayoutParams(pairLp);
+                        isPaired ? Color.TRANSPARENT : COL_SLATE_TOP);
                 btnPair.setOnClickListener(v -> pairTv(dev));
-                header.addView(btnPair);
-            }
-
-            Button btnPin = makeHeaderPill(
-                    isPinned ? "★ Pinned" : "☆ Pin",
-                    isPinned ? new int[]{COL_AMBER, COL_MAGENTA} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
-                    isPinned ? Color.WHITE : COL_MUTED,
-                    Color.TRANSPARENT);
-            btnPin.setLayoutParams(new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(HEADER_PILL_HEIGHT_DP)));
-            btnPin.setOnClickListener(v -> togglePin(dev));
-            header.addView(btnPin);
-            card.addView(header);
-
-            // Row 1: Cast / Peer YouTube Play & Mirror
-            if (dev.hasCast || dev.isPhone) {
-                Button btnPlay = makeControlSquare("Play Here", new int[]{COL_CYAN, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
-                btnPlay.setOnClickListener(v -> playOnDevice(dev));
-
-                Button btnMirror = makeControlSquare("Mirror Here", new int[]{COL_MAGENTA, COL_VIOLET}, Color.WHITE, Color.TRANSPARENT);
-                btnMirror.setOnClickListener(v -> mirrorTargets(dev));
-                card.addView(makeTwoUpRow(btnPlay, btnMirror, 12));
-            }
-
-            // Row 2: Stateful Wake / Turn Off Toggle (or Grayed-Out Unsupported w/ Chromecast 1)
-            boolean showGrayedPowerOff = dev.powerOffUnsupported && !isPaired;
-            LinearLayout powerSwitchBox;
-            if (showGrayedPowerOff) {
-                String unsupNote = (dev.powerOffNote != null && !dev.powerOffNote.isEmpty())
-                        ? dev.powerOffNote : "Unsupported w/ Chromecast 1";
-                powerSwitchBox = makeDisabledPowerSquare("Power Off (N/A)", unsupNote, () -> {
-                    setStatus(dev.name + ": Power Off is " + unsupNote + ".");
-                    Toast.makeText(this, dev.name + ": " + unsupNote, Toast.LENGTH_SHORT).show();
-                });
+                card.addView(makeTwoUpRow(btnSched, btnPair, 8));
             } else {
-                powerSwitchBox = makeSwitchSquare(
-                        displayPowerLabel(dev),
-                        dev.powerOn,
-                        null,
-                        () -> togglePowerDevice(dev));
+                LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(CONTROL_SQUARE_HEIGHT_DP));
+                sLp.topMargin = dp(8);
+                btnSched.setLayoutParams(sLp);
+                card.addView(btnSched);
             }
-
-            if (dev.hasCast && !dev.isPhone) {
-                Button btnStop = makeControlSquare("Stop Cast", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
-                btnStop.setOnClickListener(v -> stopDevice(dev));
-                card.addView(makeTwoUpRow(powerSwitchBox, btnStop, 8));
-            } else if (!dev.hasCast && !dev.isPhone && isMediaKind(kind)) {
-                String defLabel = dev.defaultVolumeLevel >= 0.0
-                        ? ("★ Default · " + Math.round(dev.defaultVolumeLevel * 100.0) + "%")
-                        : "Set Default %";
-                int[] defCols = dev.defaultVolumeLevel >= 0.0
-                        ? new int[]{COL_AMBER, COL_VIOLET}
-                        : new int[]{COL_SLATE_TOP, COL_SLATE_BOT};
-                Button btnPresetVol = makeControlSquare(defLabel, defCols, Color.WHITE,
-                        dev.defaultVolumeLevel >= 0.0 ? Color.TRANSPARENT : COL_SLATE_TOP);
-                btnPresetVol.setOnClickListener(v -> showDefaultVolumeDialog(dev));
-                card.addView(makeTwoUpRow(powerSwitchBox, btnPresetVol, 12));
-            } else {
-                Button btnSync = makeControlSquare("Sync State", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
-                btnSync.setOnClickListener(v -> {
-                    setStatus("Syncing " + dev.name + "...");
-                    refreshDevices(true);
-                });
-                card.addView(makeTwoUpRow(powerSwitchBox, btnSync, dev.isPhone ? 8 : 12));
-            }
-
-            if (showGrayedPowerOff) {
-                String unsupNote = (dev.powerOffNote != null && !dev.powerOffNote.isEmpty())
-                        ? dev.powerOffNote : "Unsupported w/ Chromecast 1";
-                TextView noteView = new TextView(this);
-                noteView.setText("\u26A0  Power Off: " + unsupNote);
-                noteView.setTextColor(COL_MUTED);
-                noteView.setTextSize(11.5f);
-                noteView.setPadding(dp(4), dp(6), dp(4), 0);
-                card.addView(noteView);
-            }
-
-            // Row 3: Volume + Stored Default Sound Levels
-            if (supportsVolumeControl(dev)) {
-                card.addView(buildVolumeSection(dev));
-            }
-
-            devicesContainer.addView(card);
         }
+
+        if (showGrayedPowerOff) {
+            String unsupNote = (dev.powerOffNote != null && !dev.powerOffNote.isEmpty())
+                    ? dev.powerOffNote : "Unsupported w/ Chromecast 1";
+            TextView noteView = new TextView(this);
+            noteView.setText("\u26A0  Power Off: " + unsupNote);
+            noteView.setTextColor(COL_MUTED);
+            noteView.setTextSize(11.5f);
+            noteView.setPadding(dp(4), dp(6), dp(4), 0);
+            card.addView(noteView);
+        }
+
+        // Row 3: Volume + Stored Default Sound Levels
+        if (supportsVolumeControl(dev)) {
+            card.addView(buildVolumeSection(dev));
+        }
+
+        return card;
     }
 
     private View buildVolumeSection(DeviceItem dev) {

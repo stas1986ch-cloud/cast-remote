@@ -14,6 +14,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.text.InputType
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -26,6 +27,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.widget.TextViewCompat
 import com.project.autoswitch.ui.cast.GoogleHomePowerBridge
 import java.util.Locale
 
@@ -75,10 +77,16 @@ class NestMonitorActivity : AppCompatActivity() {
         val titleTv = TextView(this).apply {
             text = "NEST MONITOR"
             setTextColor(Color.parseColor("#00FFFF"))
-            textSize = 20f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            maxLines = 1
+            layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f).apply {
+                marginStart = dp(6)
+                marginEnd = dp(6)
+            }
+            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                this, 11, 20, 1, TypedValue.COMPLEX_UNIT_SP
+            )
         }
         val refreshBtn = makePillButton("Refresh", "#0E7490", "#FFFFFF") { refreshThermostats() }
         topBar.addView(backBtn)

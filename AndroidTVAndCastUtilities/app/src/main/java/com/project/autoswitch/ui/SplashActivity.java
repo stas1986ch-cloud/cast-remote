@@ -61,6 +61,7 @@ public class SplashActivity extends AppCompatActivity {
     private boolean canSkip = false;
     private boolean hasProceeded = false;
     private boolean isFromBoot = false;
+    private boolean returnToCaller = false;
 
     // HDMI background detection
     private boolean isHardwareReady = false;
@@ -76,6 +77,7 @@ public class SplashActivity extends AppCompatActivity {
         btnSkipAd = findViewById(R.id.btn_skip_ad);
 
         isFromBoot = getIntent().getBooleanExtra("from_boot", false);
+        returnToCaller = getIntent().getBooleanExtra("return_to_caller", false);
 
         btnSkipAd.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -253,6 +255,9 @@ public class SplashActivity extends AppCompatActivity {
                     Log.e(TAG, "HDMI switch failed: " + e.getMessage());
                 }
             }
+            finish();
+        } else if (returnToCaller) {
+            // Returning to existing screen after app reload ad
             finish();
         } else {
             // Manual Launch: Route to Main Hub

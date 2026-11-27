@@ -4,14 +4,31 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Brand Logo / Background -->
-    <ImageView
-        android:id="@+id/splash_logo"
-        android:layout_width="260dp"
-        android:layout_height="260dp"
+    <!-- SXC Automation Brand Logo -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:src="@mipmap/ic_launcher_foreground"
-        android:contentDescription="Android Utilities Logo" />
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/splash_logo"
+            android:layout_width="240dp"
+            android:layout_height="84dp"
+            android:src="@drawable/ic_sxc_automation_logo"
+            android:contentDescription="SXC Automation Logo" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:letterSpacing="0.22"
+            android:text="SXC AUTOMATION"
+            android:textColor="#00FFFF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
 
     <!-- Ad Container (INVISIBLE instead of GONE while loading so AdView measures real 300x250 bounds) -->
     <FrameLayout

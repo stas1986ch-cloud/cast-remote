@@ -1,0 +1,76 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="220dp"
+    android:height="72dp"
+    android:viewportWidth="220"
+    android:viewportHeight="72">
+
+    <!-- Dark Neon Badge Frame -->
+    <path
+        android:fillColor="#111827"
+        android:strokeColor="#00FFFF"
+        android:strokeWidth="2"
+        android:pathData="M12,4 L208,4 Q216,4 216,12 L216,60 Q216,68 208,68 L12,68 Q4,68 4,60 L4,12 Q4,4 12,4 Z" />
+
+    <!-- Left Hex/Circuit Emblem -->
+    <path
+        android:fillColor="#7C3AED"
+        android:strokeColor="#00FFFF"
+        android:strokeWidth="1.8"
+        android:pathData="M34,14 L52,24 L52,48 L34,58 L16,48 L16,24 Z" />
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M34,22 L44,28 L44,44 L34,50 L24,44 L24,28 Z" />
+    <path
+        android:fillColor="#0A0E17"
+        android:pathData="M34,28 L39,31 L39,41 L34,44 L29,41 L29,31 Z" />
+    <path
+        android:fillColor="#EC4899"
+        android:pathData="M34,33 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+
+    <!-- Stylized "S" -->
+    <path
+        android:strokeColor="#00FFFF"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M84,21 L70,21 Q65,21 65,26 Q65,31 70,31 L79,31 Q85,31 85,37 Q85,43 79,43 L65,43" />
+
+    <!-- Stylized "X" -->
+    <path
+        android:strokeColor="#EC4899"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:pathData="M96,21 L114,43 M114,21 L96,43" />
+
+    <!-- Stylized "C" -->
+    <path
+        android:strokeColor="#00FFFF"
+        android:strokeWidth="4.2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M144,21 L130,21 Q124,21 124,27 L124,37 Q124,43 130,43 L144,43" />
+
+    <!-- Automation accent bar + circuit nodes -->
+    <path
+        android:strokeColor="#7C3AED"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:pathData="M65,54 L188,54" />
+    <path
+        android:fillColor="#00FFFF"
+        android:pathData="M196,54 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0" />
+    <path
+        android:strokeColor="#00FFFF"
+        android:strokeWidth="2.2"
+        android:strokeLineCap="round"
+        android:pathData="M156,32 L182,32 M164,24 L194,24 M164,40 L194,40" />
+    <path
+        android:fillColor="#EC4899"
+        android:pathData="M198,24 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" />
+    <path
+        android:fillColor="#10B981"
+        android:pathData="M186,32 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" />
+    <path
+        android:fillColor="#F59E0B"
+        android:pathData="M198,40 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0" />
+</vector>

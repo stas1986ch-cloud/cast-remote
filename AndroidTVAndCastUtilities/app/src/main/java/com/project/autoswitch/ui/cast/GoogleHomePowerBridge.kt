@@ -397,6 +397,7 @@ object GoogleHomePowerBridge {
                 )
             }
 
+            com.project.autoswitch.ui.ScreenControlApp.suppressNextAdBriefly(25_000L)
             val res = withContext(Dispatchers.Main) {
                 hc.requestPermissions(ForcePermissionFlow.FORCE_LAUNCH, consentScreenOptions = options)
             }
@@ -757,6 +758,71 @@ object GoogleHomePowerBridge {
                 logDiag(activity, "setPower('$deviceName') error: $err")
                 callback.onResult(false, err)
             }
+        }
+    }
+
+    /**
+     * Executes scheduled background power-off on a Google Home device without needing an active Activity.
+     */
+    @JvmStatic
+    suspend fun powerOffFromBackground(context: Context, homeKey: String, deviceName: String): Pair<Boolean, String> {
+        return try {
+            val hc = getOrCreateClient(context)
+            val perm = withTimeout(8_000) {
+                hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
+            }
+            if (perm != PermissionsState.GRANTED) {
+                return false to "Google Home permission not granted"
+            }
+            var dev = lookupDevice(homeKey, deviceName)
+            if (dev == null) {
+                val structures = withTimeout(10_000) { hc.structures().first() }
+                for (s in structures) {
+                    try {
+                        val devs = withTimeout(10_000) { s.devices().first() }
+                        for (d in devs) {
+                            devicesByKey["home::${s.name}::${d.name}"] = d
+                            devicesByLowerName[d.name.trim().lowercase(Locale.US)] = d
+                        }
+                    } catch (_: Throwable) {}
+                }
+                dev = lookupDevice(homeKey, deviceName)
+            }
+            if (dev == null) return false to "Device '$deviceName' not found in Google Home"
+            val endpoints = collectAllDeviceEndpoints(context, dev)
+            findTraitAcrossEndpoints(endpoints, OnOff)?.let {
+                try {
+                    it.off()
+                    logDiag(context, "Scheduled Off OK: '${dev.name}' via OnOff.off()")
+                    return true to dev.name
+                } catch (_: Throwable) {}
+            }
+            findTraitAcrossEndpoints(endpoints, LowPower)?.let {
+                try {
+                    it.sleep()
+                    logDiag(context, "Scheduled Off OK: '${dev.name}' via LowPower.sleep()")
+                    return true to dev.name
+                } catch (_: Throwable) {}
+            }
+            findTraitAcrossEndpoints(endpoints, KeypadInput)?.let {
+                try {
+                    it.sendKey(KeypadInputTrait.CecKeyCodeEnum.PowerOffFunction)
+                    logDiag(context, "Scheduled Off OK: '${dev.name}' via KeypadInput")
+                    return true to dev.name
+                } catch (_: Throwable) {}
+            }
+            findTraitAcrossEndpoints(endpoints, ExtendedKeypadInput)?.let {
+                for (kc in listOf(ExtendedKeypadInputTrait.KeyCode.PowerOffFunction, ExtendedKeypadInputTrait.KeyCode.Power)) {
+                    try {
+                        it.extendedSendKey(ExtendedKeypadInputTrait.Key(kc, false))
+                        logDiag(context, "Scheduled Off OK: '${dev.name}' via ExtendedKeypadInput($kc)")
+                        return true to dev.name
+                    } catch (_: Throwable) {}
+                }
+            }
+            false to "No power-off trait succeeded on '${dev.name}'"
+        } catch (t: Throwable) {
+            false to (t.message ?: t.javaClass.simpleName)
         }
     }
 }
