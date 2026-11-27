@@ -63,6 +63,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private static final String KEY_SAVED_DEVICES = "saved_network_devices_v1";
     private static final String KEY_DEFAULT_VOLUMES = "device_default_volumes_v1";
     private static final String KEY_LINKED_HOME = "linked_cast_home_keys_v1";
+    private static final String KEY_UNSUPPORTED_POWER = "unsupported_power_devices_v1";
     private static final String CAST_TYPE = "_googlecast._tcp.";
     private static final String PHONE_TYPE = "_castremote._tcp.";
     private static final int RECEIVER_PORT = 8766;
@@ -114,6 +115,8 @@ public class CastRemoteActivity extends AppCompatActivity {
         boolean supportsHomeOnOff;
         String homeCategory;
         String homeTypeSummary;
+        boolean powerOffUnsupported;
+        String powerOffNote;
 
         DeviceItem(String id, String name, String model, String state, String title,
                    boolean isPhone, boolean hasCast, String host, int port) {
@@ -135,6 +138,8 @@ public class CastRemoteActivity extends AppCompatActivity {
             this.supportsHomeOnOff = false;
             this.homeCategory = "";
             this.homeTypeSummary = "";
+            this.powerOffUnsupported = false;
+            this.powerOffNote = "";
         }
     }
 
@@ -145,6 +150,7 @@ public class CastRemoteActivity extends AppCompatActivity {
     private final Map<String, DeviceItem> homeDevices = new ConcurrentHashMap<>();
     private final Map<String, Double> defaultVolumes = new ConcurrentHashMap<>();
     private final Map<String, String> linkedHomeKeys = new ConcurrentHashMap<>();
+    private final Map<String, String> unsupportedPowerNotes = new ConcurrentHashMap<>();
     private Set<String> pinnedIds = new HashSet<>();
 
     private CastAndTvEngine engine;
@@ -175,6 +181,7 @@ public class CastRemoteActivity extends AppCompatActivity {
         setContentView(buildUi());
         loadDefaultVolumes();
         loadLinkedHomeKeys();
+        loadUnsupportedPowerNotes();
         loadSavedDevices();
         renderDevices();
         // Automatically prompt to authorize/reauthorize Google Home if not yet connected or 0 devices synced!
@@ -245,6 +252,87 @@ public class CastRemoteActivity extends AppCompatActivity {
             pinnedIds.add(castDev.id);
         }
         saveDevicesToPrefs();
+    }
+
+    // MARK: - Persisted Chromecast 1 / Unsupported Power-Off Flags
+
+    private void loadUnsupportedPowerNotes() {
+        unsupportedPowerNotes.clear();
+        try {
+            String raw = getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_UNSUPPORTED_POWER, null);
+            if (raw == null || raw.isEmpty()) return;
+            JSONObject obj = new JSONObject(raw);
+            Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                String v = obj.optString(k, "");
+                if (!v.isEmpty()) unsupportedPowerNotes.put(k, v);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private void persistUnsupportedPowerNotes() {
+        try {
+            JSONObject obj = new JSONObject();
+            for (Map.Entry<String, String> e : unsupportedPowerNotes.entrySet()) {
+                if (e.getValue() != null && !e.getValue().isEmpty()) {
+                    obj.put(e.getKey(), e.getValue());
+                }
+            }
+            getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(KEY_UNSUPPORTED_POWER, obj.toString())
+                    .apply();
+        } catch (Exception ignored) {}
+    }
+
+    private String lookupUnsupportedPowerNote(DeviceItem d) {
+        if (d == null) return "";
+        String v = unsupportedPowerNotes.get(d.id);
+        if (v != null && !v.isEmpty()) return v;
+        if (d.homeKey != null && !d.homeKey.isEmpty()) {
+            v = unsupportedPowerNotes.get(d.homeKey);
+            if (v != null && !v.isEmpty()) return v;
+        }
+        v = unsupportedPowerNotes.get(normNameKey(d.name));
+        if (v != null && !v.isEmpty()) return v;
+        return d.powerOffNote != null ? d.powerOffNote : "";
+    }
+
+    private void markPowerOffUnsupported(DeviceItem dev, String note) {
+        String cleanNote = (note != null && !note.isEmpty()) ? note : "Unsupported w/ Chromecast 1";
+        dev.powerOffUnsupported = true;
+        dev.powerOffNote = cleanNote;
+        unsupportedPowerNotes.put(dev.id, cleanNote);
+        unsupportedPowerNotes.put(normNameKey(dev.name), cleanNote);
+        if (dev.homeKey != null && !dev.homeKey.isEmpty()) {
+            unsupportedPowerNotes.put(dev.homeKey, cleanNote);
+        }
+        for (DeviceItem c : castDevices.values()) {
+            if (c.id.equals(dev.id) || c.name.trim().equalsIgnoreCase(dev.name.trim())) {
+                c.powerOffUnsupported = true;
+                c.powerOffNote = cleanNote;
+            }
+        }
+        for (DeviceItem h : homeDevices.values()) {
+            if (h.id.equals(dev.id) || h.name.trim().equalsIgnoreCase(dev.name.trim())) {
+                h.powerOffUnsupported = true;
+                h.powerOffNote = cleanNote;
+            }
+        }
+        persistUnsupportedPowerNotes();
+        saveDevicesToPrefs();
+    }
+
+    private void clearPowerOffUnsupported(DeviceItem dev) {
+        dev.powerOffUnsupported = false;
+        dev.powerOffNote = "";
+        unsupportedPowerNotes.remove(dev.id);
+        unsupportedPowerNotes.remove(normNameKey(dev.name));
+        if (dev.homeKey != null && !dev.homeKey.isEmpty()) {
+            unsupportedPowerNotes.remove(dev.homeKey);
+        }
+        persistUnsupportedPowerNotes();
     }
 
     // MARK: - Stored Default Sound Levels
@@ -603,6 +691,38 @@ public class CastRemoteActivity extends AppCompatActivity {
         return box;
     }
 
+    private LinearLayout makeDisabledPowerSquare(String titleText, String subNote, Runnable onInfoTap) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        int grayBg = Color.parseColor("#1A202E");
+        int grayBorder = Color.parseColor("#2E3748");
+        box.setBackground(gradientButtonBg(new int[]{grayBg, grayBg}, grayBorder));
+        box.setPadding(dp(12), dp(6), dp(10), dp(6));
+        box.setMinimumHeight(dp(CONTROL_SQUARE_HEIGHT_DP));
+        box.setAlpha(0.50f);
+        box.setFocusable(true);
+        box.setClickable(true);
+
+        TextView lbl = new TextView(this);
+        lbl.setText(titleText);
+        lbl.setTextColor(COL_MUTED);
+        lbl.setTextSize(12.5f);
+        lbl.setTypeface(Typeface.DEFAULT_BOLD);
+        lbl.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(lbl);
+
+        SwitchCompat sw = new SwitchCompat(this);
+        sw.setFocusable(false);
+        sw.setClickable(false);
+        sw.setEnabled(false);
+        sw.setChecked(false);
+        box.addView(sw);
+
+        box.setOnClickListener(v -> onInfoTap.run());
+        return box;
+    }
+
     private Button makeHeaderPill(String label, int[] gradientColors, int textColor, int strokeNormal) {
         Button b = new Button(this);
         b.setText(label);
@@ -830,6 +950,13 @@ public class CastRemoteActivity extends AppCompatActivity {
                 item.supportsHomeOnOff = o.optBoolean("supportsHomeOnOff", false) || !item.homeKey.isEmpty();
                 item.homeCategory = o.optString("homeCategory", "");
                 item.homeTypeSummary = o.optString("homeTypeSummary", "");
+                item.powerOffUnsupported = o.optBoolean("powerOffUnsupported", false);
+                item.powerOffNote = o.optString("powerOffNote", "");
+                String savedUnsup = lookupUnsupportedPowerNote(item);
+                if (!savedUnsup.isEmpty()) {
+                    item.powerOffUnsupported = true;
+                    item.powerOffNote = savedUnsup;
+                }
                 item.defaultVolumeLevel = lookupDefaultVolume(item);
 
                 if (isPhone) {
@@ -868,6 +995,8 @@ public class CastRemoteActivity extends AppCompatActivity {
                 o.put("supportsHomeOnOff", d.supportsHomeOnOff);
                 o.put("homeCategory", d.homeCategory != null ? d.homeCategory : "");
                 o.put("homeTypeSummary", d.homeTypeSummary != null ? d.homeTypeSummary : "");
+                o.put("powerOffUnsupported", d.powerOffUnsupported);
+                o.put("powerOffNote", d.powerOffNote != null ? d.powerOffNote : "");
                 arr.put(o);
             }
             getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -964,6 +1093,15 @@ public class CastRemoteActivity extends AppCompatActivity {
                     }
                     matchedCast.homeCategory = snap.category;
                     matchedCast.homeTypeSummary = snap.typeSummary;
+                    if (snap.powerOffUnsupported) {
+                        markPowerOffUnsupported(matchedCast, snap.powerOffNote);
+                    } else {
+                        String persistedUnsup = lookupUnsupportedPowerNote(matchedCast);
+                        if (!persistedUnsup.isEmpty()) {
+                            matchedCast.powerOffUnsupported = true;
+                            matchedCast.powerOffNote = persistedUnsup;
+                        }
+                    }
                     matchedCast.defaultVolumeLevel = lookupDefaultVolume(matchedCast);
                     if (homeDevices.remove(snap.key) != null && pinnedIds.remove(snap.key)) {
                         pinnedIds.add(matchedCast.id);
@@ -992,6 +1130,19 @@ public class CastRemoteActivity extends AppCompatActivity {
                     }
                     item.homeCategory = snap.category;
                     item.homeTypeSummary = snap.typeSummary;
+                    if (!isMediaHomeCategory(snap.category)) {
+                        if (item.powerOffUnsupported) {
+                            clearPowerOffUnsupported(item);
+                        }
+                    } else if (snap.powerOffUnsupported) {
+                        markPowerOffUnsupported(item, snap.powerOffNote);
+                    } else {
+                        String persistedUnsup = lookupUnsupportedPowerNote(item);
+                        if (!persistedUnsup.isEmpty()) {
+                            item.powerOffUnsupported = true;
+                            item.powerOffNote = persistedUnsup;
+                        }
+                    }
                     item.defaultVolumeLevel = lookupDefaultVolume(item);
                     homeDevices.put(snap.key, item);
                 }
@@ -1143,6 +1294,12 @@ public class CastRemoteActivity extends AppCompatActivity {
                         if (st.volumeControlType != null && !st.volumeControlType.isEmpty()) {
                             tv.volumeControlType = st.volumeControlType;
                         }
+                    }
+                    Boolean isCc1 = engine.detectChromecastGen1(tv.host);
+                    if (Boolean.TRUE.equals(isCc1) && !engine.isPaired(tv.id)) {
+                        markPowerOffUnsupported(tv, "Unsupported w/ Chromecast 1");
+                    } else if (Boolean.FALSE.equals(isCc1) && tv.powerOffUnsupported) {
+                        clearPowerOffUnsupported(tv);
                     }
                 } catch (Exception ignored) {}
             }
@@ -1346,12 +1503,23 @@ public class CastRemoteActivity extends AppCompatActivity {
                 card.addView(makeTwoUpRow(btnPlay, btnMirror, 12));
             }
 
-            // Row 2: Stateful Wake / Turn Off Toggle
-            LinearLayout powerSwitchBox = makeSwitchSquare(
-                    displayPowerLabel(dev),
-                    dev.powerOn,
-                    null,
-                    () -> togglePowerDevice(dev));
+            // Row 2: Stateful Wake / Turn Off Toggle (or Grayed-Out Unsupported w/ Chromecast 1)
+            boolean showGrayedPowerOff = dev.powerOffUnsupported && !isPaired;
+            LinearLayout powerSwitchBox;
+            if (showGrayedPowerOff) {
+                String unsupNote = (dev.powerOffNote != null && !dev.powerOffNote.isEmpty())
+                        ? dev.powerOffNote : "Unsupported w/ Chromecast 1";
+                powerSwitchBox = makeDisabledPowerSquare("Power Off (N/A)", unsupNote, () -> {
+                    setStatus(dev.name + ": Power Off is " + unsupNote + ".");
+                    Toast.makeText(this, dev.name + ": " + unsupNote, Toast.LENGTH_SHORT).show();
+                });
+            } else {
+                powerSwitchBox = makeSwitchSquare(
+                        displayPowerLabel(dev),
+                        dev.powerOn,
+                        null,
+                        () -> togglePowerDevice(dev));
+            }
 
             if (dev.hasCast && !dev.isPhone) {
                 Button btnStop = makeControlSquare("Stop Cast", new int[]{COL_SLATE_TOP, COL_SLATE_BOT}, COL_TEXT, COL_SLATE_TOP);
@@ -1375,6 +1543,17 @@ public class CastRemoteActivity extends AppCompatActivity {
                     refreshDevices(true);
                 });
                 card.addView(makeTwoUpRow(powerSwitchBox, btnSync, dev.isPhone ? 8 : 12));
+            }
+
+            if (showGrayedPowerOff) {
+                String unsupNote = (dev.powerOffNote != null && !dev.powerOffNote.isEmpty())
+                        ? dev.powerOffNote : "Unsupported w/ Chromecast 1";
+                TextView noteView = new TextView(this);
+                noteView.setText("\u26A0  Power Off: " + unsupNote);
+                noteView.setTextColor(COL_MUTED);
+                noteView.setTextSize(11.5f);
+                noteView.setPadding(dp(4), dp(6), dp(4), 0);
+                card.addView(noteView);
             }
 
             // Row 3: Volume + Stored Default Sound Levels
@@ -1823,7 +2002,8 @@ public class CastRemoteActivity extends AppCompatActivity {
         all.addAll(homeDevices.values());
         for (DeviceItem d : all) {
             DeviceKind k = classifyDevice(d);
-            if (k == DeviceKind.TV || k == DeviceKind.PROJECTOR || k == DeviceKind.DISPLAY) {
+            if ((k == DeviceKind.TV || k == DeviceKind.PROJECTOR || k == DeviceKind.DISPLAY)
+                    && !d.powerOffUnsupported) {
                 targets.add(d);
             }
         }
@@ -1919,6 +2099,20 @@ public class CastRemoteActivity extends AppCompatActivity {
                 dev.supportsHomeOnOff = true;
                 markPowerUpdated(dev, targetOn,
                         "Powered " + (targetOn ? "ON " : "OFF ") + msg + " via Google Home.");
+                return;
+            }
+
+            if (msg != null && msg.startsWith(GoogleHomePowerBridge.UNSUPPORTED_CC1_PREFIX)) {
+                String unsupNote = msg.substring(GoogleHomePowerBridge.UNSUPPORTED_CC1_PREFIX.length()).trim();
+                if (unsupNote.isEmpty()) unsupNote = "Unsupported w/ Chromecast 1";
+                markPowerOffUnsupported(dev, unsupNote);
+                dev.powerOn = previousOn;
+                dev.state = previousOn ? "ON" : "OFF";
+                final String finalNote = unsupNote;
+                runSafeUi(() -> {
+                    renderDevices();
+                    setStatus(dev.name + ": Power Off " + finalNote + ".");
+                });
                 return;
             }
 

@@ -213,6 +213,47 @@ public final class CastAndTvEngine {
         return null;
     }
 
+    /**
+     * Queries Chromecast local setup endpoint (port 8008) to check whether this device is a
+     * Gen-1 Chromecast (final EOL build 1.36.x), which does not support HDMI-CEC Power Off.
+     * Returns Boolean.TRUE for Gen-1, Boolean.FALSE for Gen-2+/Google TV, or null if unreachable.
+     */
+    public Boolean detectChromecastGen1(String host) {
+        if (host == null || host.isEmpty()) return null;
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL("http://" + host + ":8008/setup/eureka_info");
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(2500);
+            conn.setReadTimeout(2500);
+            conn.setRequestMethod("GET");
+            if (conn.getResponseCode() != 200) return null;
+            StringBuilder sb = new StringBuilder();
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) sb.append(line);
+            }
+            JSONObject obj = new JSONObject(sb.toString());
+            String model = obj.optString("detail", "").toLowerCase(Locale.US);
+            String rev = obj.optString("cast_build_revision", "").trim();
+            if (rev.isEmpty()) return null;
+            boolean isDongle = model.contains("eureka") || model.contains("chromecast") || obj.has("ssdp_udn");
+            if (!isDongle) return false;
+            String[] parts = rev.split("\\.");
+            if (parts.length >= 2) {
+                int major = Integer.parseInt(parts[0]);
+                int minor = Integer.parseInt(parts[1]);
+                return (major == 1 && minor <= 36);
+            }
+            return rev.startsWith("1.36.");
+        } catch (Exception ignored) {
+            return null;
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
     public MediaStatus getMediaStatus(String host, int port) throws Exception {
         try (SSLSocket sock = openCastSocket(host, port, 5000)) {
             DataInputStream inp = new DataInputStream(sock.getInputStream());

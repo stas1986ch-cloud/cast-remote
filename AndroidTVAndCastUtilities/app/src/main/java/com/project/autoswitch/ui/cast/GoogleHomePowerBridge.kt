@@ -61,7 +61,9 @@ object GoogleHomePowerBridge {
         @JvmField val category: String,
         @JvmField val supportsOnOff: Boolean,
         @JvmField val powerOn: Boolean?,   // null when device doesn't report readable power state
-        @JvmField val mediaState: String   // PLAYING, PAUSED, BUFFERING, STANDBY, ACTIVE, or ""
+        @JvmField val mediaState: String,  // PLAYING, PAUSED, BUFFERING, STANDBY, ACTIVE, or ""
+        @JvmField val powerOffUnsupported: Boolean = false,
+        @JvmField val powerOffNote: String = ""
     )
 
     fun interface PowerCallback {
@@ -74,6 +76,7 @@ object GoogleHomePowerBridge {
 
     const val AUTH_REQUIRED_PREFIX = "AUTH_REQUIRED:"
     const val TRANSIENT_PREFIX = "TRANSIENT:"
+    const val UNSUPPORTED_CC1_PREFIX = "UNSUPPORTED_CC1:"
 
     private const val CRASH_FILE = "last_crash.txt"
     private const val DIAG_FILE = "cast_diag.txt"
@@ -476,10 +479,18 @@ object GoogleHomePowerBridge {
 
                             val (cat, label) = classifyTypes(typeNames, d.name)
 
+                            val basicInfo = findTraitAcrossEndpoints(endpoints, BasicInformation)
+                            val swVer = try { basicInfo?.softwareVersionString?.trim().orEmpty() } catch (_: Throwable) { "" }
+                            val hwVer = try { basicInfo?.hardwareVersionString?.trim().orEmpty() } catch (_: Throwable) { "" }
+                            val prodName = try { basicInfo?.productName?.trim().orEmpty() } catch (_: Throwable) { "" }
+                            val isCastTv = (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") &&
+                                (prodName.contains("Chromecast", ignoreCase = true) || prodName.contains("Eureka", ignoreCase = true))
+                            val isGen1ByBasicInfo = isCastTv && swVer.startsWith("1.36.")
+
                             if (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") {
                                 logDiag(
                                     activity,
-                                    "TV '${d.name}' [${s.name}] onOff=${onOff?.onOff} act=$actState play=$playState -> livePower=$livePower types=${typeNames.joinToString()}"
+                                    "TV '${d.name}' [${s.name}] onOff=${onOff?.onOff} act=$actState play=$playState -> livePower=$livePower sw='$swVer' hw='$hwVer' prod='$prodName' types=${typeNames.joinToString()}"
                                 )
                             }
 
@@ -491,7 +502,9 @@ object GoogleHomePowerBridge {
                                 category = cat,
                                 supportsOnOff = supportsPower,
                                 powerOn = livePower,
-                                mediaState = mediaLabel
+                                mediaState = mediaLabel,
+                                powerOffUnsupported = isGen1ByBasicInfo,
+                                powerOffNote = if (isGen1ByBasicInfo) "Unsupported w/ Chromecast 1" else ""
                             )
                         }
                     }
@@ -666,7 +679,11 @@ object GoogleHomePowerBridge {
         }
 
         val reason = if (lastOnOffErr != null && (lastOnOffErr.contains("19:") || lastOnOffErr.contains("Command errors"))) {
-            "TV rejected HDMI-CEC power ${if (turnOn) "ON" else "OFF"} (Error 19: check TV HDMI-CEC or Gen-1 Chromecast limitation)"
+            if (!turnOn) {
+                "${UNSUPPORTED_CC1_PREFIX}Unsupported w/ Chromecast 1"
+            } else {
+                "TV rejected HDMI-CEC power ON (Error 19: check TV HDMI-CEC)"
+            }
         } else {
             "traits=[$traitsSummary]"
         }
@@ -733,7 +750,8 @@ object GoogleHomePowerBridge {
                 }
 
                 logDiag(activity, "setPower('${dev.name}'): no power command succeeded ($detail)")
-                callback.onResult(false, "'${dev.name}' $detail")
+                val outMsg = if (detail.startsWith(UNSUPPORTED_CC1_PREFIX)) detail else "'${dev.name}' $detail"
+                callback.onResult(false, outMsg)
             } catch (t: Throwable) {
                 val err = "${t.javaClass.simpleName}: ${t.message}"
                 logDiag(activity, "setPower('$deviceName') error: $err")
