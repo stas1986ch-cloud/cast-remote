@@ -60,6 +60,110 @@ data class NestMonitorRules(
     val pollIntervalMin: Int
 )
 
+data class NestAlertEvent(
+    val notificationIdOffset: Int,
+    val title: String,
+    val body: String,
+    val newAmbientBaselineF: Float? = null,
+    val newTargetBaselineF: Float? = null,
+    val isLowTempAlert: Boolean = false
+)
+
+object NestAlertEvaluator {
+    /**
+     * Pure deterministic evaluator for Nest thermostat changes.
+     * Independently tracks BOTH ambient room temp AND target setpoint so dial/app changes
+     * (e.g. First Floor 75°F -> 71°F) trigger immediately without waiting for room temp to drift.
+     */
+    fun evaluateSingle(
+        snap: ThermostatSnapshot,
+        rules: NestMonitorRules,
+        ambientBaselineF: Float?,
+        targetBaselineF: Float?,
+        canFireLowAlert: Boolean
+    ): Pair<List<NestAlertEvent>, Pair<Float?, Float?>> {
+        val events = ArrayList<NestAlertEvent>()
+        var nextAmbBase = ambientBaselineF
+        var nextTgtBase = targetBaselineF
+        val eps = 0.05 // guard floating-point rounding (e.g. 3.999°F for 4°F)
+
+        // 1. Target setpoint delta check (catches immediate dial/app changes like 75 -> 71)
+        val curTarget = snap.activeTargetF
+        if (curTarget != null) {
+            if (targetBaselineF == null) {
+                nextTgtBase = curTarget.toFloat()
+            } else {
+                val diff = curTarget - targetBaselineF.toDouble()
+                if (abs(diff) + eps >= rules.deltaDegreesF.toDouble()) {
+                    val dir = if (diff > 0) "raised" else "lowered"
+                    val msg = String.format(
+                        Locale.US,
+                        "%s target %s by %.1f°F (%.1f°F -> %.1f°F)",
+                        snap.name, dir, abs(diff), targetBaselineF, curTarget
+                    )
+                    events.add(
+                        NestAlertEvent(
+                            notificationIdOffset = 2000,
+                            title = "Nest Target Changed: ${snap.name}",
+                            body = msg,
+                            newTargetBaselineF = curTarget.toFloat()
+                        )
+                    )
+                    nextTgtBase = curTarget.toFloat()
+                }
+            }
+        }
+
+        // 2. Ambient room temperature delta check
+        val curAmbient = snap.ambientF
+        if (curAmbient != null) {
+            if (ambientBaselineF == null) {
+                nextAmbBase = curAmbient.toFloat()
+            } else {
+                val diff = curAmbient - ambientBaselineF.toDouble()
+                if (abs(diff) + eps >= rules.deltaDegreesF.toDouble()) {
+                    val dir = if (diff > 0) "rose" else "dropped"
+                    val msg = String.format(
+                        Locale.US,
+                        "%s room temp %s by %.1f°F (%.1f°F -> %.1f°F)",
+                        snap.name, dir, abs(diff), ambientBaselineF, curAmbient
+                    )
+                    events.add(
+                        NestAlertEvent(
+                            notificationIdOffset = 0,
+                            title = "Nest Temp Changed: ${snap.name}",
+                            body = msg,
+                            newAmbientBaselineF = curAmbient.toFloat()
+                        )
+                    )
+                    nextAmbBase = curAmbient.toFloat()
+                }
+            }
+        }
+
+        // 3. Low temperature threshold check (ambient or target <= minTempF)
+        val lowest = listOfNotNull(curAmbient, curTarget).minOrNull()
+        if (lowest != null && lowest <= rules.minTempF.toDouble() + eps && canFireLowAlert) {
+            val which = if (curAmbient != null && curAmbient <= rules.minTempF.toDouble() + eps) "room temp" else "target"
+            val msg = String.format(
+                Locale.US,
+                "%s %s is %.1f°F (at or below %.1f°F limit)",
+                snap.name, which, lowest, rules.minTempF
+            )
+            events.add(
+                NestAlertEvent(
+                    notificationIdOffset = 1000,
+                    title = "Low Temp Alert: ${snap.name}",
+                    body = msg,
+                    isLowTempAlert = true
+                )
+            )
+        }
+
+        return events to (nextAmbBase to nextTgtBase)
+    }
+}
+
 object NestThermostatBridge {
     private const val PREFS_NAME = "NestMonitorPrefs"
     private const val KEY_ENABLED = "monitor_enabled"
@@ -104,6 +208,18 @@ object NestThermostatBridge {
     fun setBaselineF(context: Context, key: String, tempF: Float) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putFloat("baseline_$key", tempF)
+            .apply()
+    }
+
+    fun getTargetBaselineF(context: Context, key: String): Float? {
+        val p = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefKey = "baseline_target_$key"
+        return if (p.contains(prefKey)) p.getFloat(prefKey, Float.NaN).takeIf { !it.isNaN() } else null
+    }
+
+    fun setTargetBaselineF(context: Context, key: String, tempF: Float) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putFloat("baseline_target_$key", tempF)
             .apply()
     }
 
@@ -240,7 +356,8 @@ object NestThermostatBridge {
                     err = retry.second
                 }
                 if (err == null && list.isNotEmpty()) {
-                    evaluateAlerts(activity, list, fireNotifications = false)
+                    val rules = loadRules(activity)
+                    evaluateAlerts(activity, list, fireNotifications = rules.enabled)
                 }
                 activity.runOnUiThread { onResult(list, err) }
             } catch (t: Throwable) {
@@ -292,7 +409,7 @@ object NestThermostatBridge {
                         else -> setOccupiedHeatingSetpoint(centiC)
                     }
                 }
-                setBaselineF(activity, key, clampedF.toFloat())
+                setTargetBaselineF(activity, key, clampedF.toFloat())
                 val formatted = String.format(Locale.US, "%.1f°F", clampedF)
                 GoogleHomePowerBridge.logDiag(activity, "Nest '${dev.name}' set to $formatted")
                 activity.runOnUiThread { onResult(true, "${dev.name} set to $formatted") }
@@ -306,7 +423,8 @@ object NestThermostatBridge {
 
     /**
      * Evaluates all thermostats against user-configured delta and low-temp threshold rules.
-     * Seeds baseline temperatures on first observation and fires high-priority alerts when crossed.
+     * Tracks BOTH ambient room temperature and target setpoint independently.
+     * Never silently overwrites baselines when fireNotifications is false!
      */
     fun evaluateAlerts(context: Context, snapshots: List<ThermostatSnapshot>, fireNotifications: Boolean): List<String> {
         val rules = loadRules(context)
@@ -314,42 +432,55 @@ object NestThermostatBridge {
         val now = System.currentTimeMillis()
 
         for (snap in snapshots) {
-            val currentF = snap.ambientF ?: snap.activeTargetF ?: continue
-            val baseline = getBaselineF(context, snap.key)
-            if (baseline == null) {
-                setBaselineF(context, snap.key, currentF.toFloat())
-                continue
+            val ambBase = getBaselineF(context, snap.key)
+            val tgtBase = getTargetBaselineF(context, snap.key)
+            val lastLow = lastLowAlertMs[snap.key] ?: 0L
+            val canFireLow = (now - lastLow) >= 30 * 60_000L
+
+            GoogleHomePowerBridge.logDiag(
+                context,
+                String.format(
+                    Locale.US,
+                    "Nest poll '%s': amb=%s (base=%s) tgt=%s (base=%s) mode=%s",
+                    snap.name,
+                    snap.ambientF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "null",
+                    ambBase?.let { String.format(Locale.US, "%.1f°F", it) } ?: "none",
+                    snap.activeTargetF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "null",
+                    tgtBase?.let { String.format(Locale.US, "%.1f°F", it) } ?: "none",
+                    snap.modeLabel
+                )
+            )
+
+            val (events, nextBases) = NestAlertEvaluator.evaluateSingle(
+                snap = snap,
+                rules = rules,
+                ambientBaselineF = ambBase,
+                targetBaselineF = tgtBase,
+                canFireLowAlert = canFireLow
+            )
+
+            // Always seed initial baselines if missing
+            if (ambBase == null && nextBases.first != null) {
+                setBaselineF(context, snap.key, nextBases.first!!)
+            }
+            if (tgtBase == null && nextBases.second != null) {
+                setTargetBaselineF(context, snap.key, nextBases.second!!)
             }
 
-            // Rule 1: Temperature changed by >= deltaDegreesF
-            val diff = currentF - baseline.toDouble()
-            if (abs(diff) >= rules.deltaDegreesF.toDouble()) {
-                val dir = if (diff > 0) "rose" else "dropped"
-                val msg = String.format(
-                    Locale.US,
-                    "%s %s by %.1f°F (%.1f°F -> %.1f°F)",
-                    snap.name, dir, abs(diff), baseline, currentF
-                )
-                triggered.add(msg)
-                setBaselineF(context, snap.key, currentF.toFloat())
+            for (ev in events) {
+                triggered.add(ev.body)
                 if (fireNotifications && rules.enabled) {
-                    postAlertNotification(context, snap.key.hashCode(), "Nest Temp Changed: ${snap.name}", msg)
-                }
-            }
-
-            // Rule 2: Temperature fell to or below minTempF (with 30-min cooldown per thermostat)
-            if (currentF <= rules.minTempF.toDouble()) {
-                val lastMs = lastLowAlertMs[snap.key] ?: 0L
-                val cooldownPassed = (now - lastMs) >= 30 * 60_000L
-                val msg = String.format(
-                    Locale.US,
-                    "%s is at %.1f°F (at or below %.1f°F threshold)",
-                    snap.name, currentF, rules.minTempF
-                )
-                triggered.add(msg)
-                if (fireNotifications && rules.enabled && cooldownPassed) {
-                    lastLowAlertMs[snap.key] = now
-                    postAlertNotification(context, snap.key.hashCode() + 1000, "Low Temp Alert: ${snap.name}", msg)
+                    if (ev.newAmbientBaselineF != null) {
+                        setBaselineF(context, snap.key, ev.newAmbientBaselineF)
+                    }
+                    if (ev.newTargetBaselineF != null) {
+                        setTargetBaselineF(context, snap.key, ev.newTargetBaselineF)
+                    }
+                    if (ev.isLowTempAlert) {
+                        lastLowAlertMs[snap.key] = now
+                    }
+                    GoogleHomePowerBridge.logDiag(context, "Nest ALERT fired: ${ev.title} — ${ev.body}")
+                    postAlertNotification(context, snap.key.hashCode() + ev.notificationIdOffset, ev.title, ev.body)
                 }
             }
         }

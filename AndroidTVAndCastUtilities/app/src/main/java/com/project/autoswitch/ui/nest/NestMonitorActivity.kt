@@ -332,11 +332,13 @@ class NestMonitorActivity : AppCompatActivity() {
 
             val ambStr = snap.ambientF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
             val targetStr = snap.activeTargetF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
-            val baseF = NestThermostatBridge.getBaselineF(this, snap.key)
-            val baseStr = baseF?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
+            val baseAmb = NestThermostatBridge.getBaselineF(this, snap.key)
+            val baseTgt = NestThermostatBridge.getTargetBaselineF(this, snap.key)
+            val baseAmbStr = baseAmb?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
+            val baseTgtStr = baseTgt?.let { String.format(Locale.US, "%.1f°F", it) } ?: "--°F"
 
             val tempRow = TextView(this).apply {
-                text = "Current: $ambStr   |   Target: $targetStr (${snap.modeLabel})"
+                text = "Room: $ambStr   |   Target: $targetStr (${snap.modeLabel})"
                 setTextColor(
                     if (snap.ambientF != null && snap.ambientF <= rules.minTempF) Color.parseColor("#EF4444")
                     else Color.parseColor("#00FFFF")
@@ -348,7 +350,7 @@ class NestMonitorActivity : AppCompatActivity() {
             card.addView(tempRow)
 
             val baseRow = TextView(this).apply {
-                text = "Alert baseline: $baseStr (±${String.format(Locale.US, "%.1f", rules.deltaDegreesF)}°F) · Low limit: ≤${String.format(Locale.US, "%.1f", rules.minTempF)}°F"
+                text = "Baselines: Room $baseAmbStr · Target $baseTgtStr (±${String.format(Locale.US, "%.1f", rules.deltaDegreesF)}°F) · Low ≤${String.format(Locale.US, "%.1f", rules.minTempF)}°F"
                 setTextColor(Color.parseColor("#9CA3AF"))
                 textSize = 12f
                 setPadding(0, 0, 0, dp(10))
@@ -383,12 +385,10 @@ class NestMonitorActivity : AppCompatActivity() {
                 }
             }
             val baseBtn = makePillButton("Baseline", "#334155", "#E5E7EB") {
-                val cur = (snap.ambientF ?: snap.activeTargetF)?.toFloat()
-                if (cur != null) {
-                    NestThermostatBridge.setBaselineF(this, snap.key, cur)
-                    Toast.makeText(this, "${snap.name} baseline set to ${String.format(Locale.US, "%.1f°F", cur)}", Toast.LENGTH_SHORT).show()
-                    renderThermostats()
-                }
+                snap.ambientF?.toFloat()?.let { NestThermostatBridge.setBaselineF(this, snap.key, it) }
+                snap.activeTargetF?.toFloat()?.let { NestThermostatBridge.setTargetBaselineF(this, snap.key, it) }
+                Toast.makeText(this, "${snap.name} room & target baselines reset to current.", Toast.LENGTH_SHORT).show()
+                renderThermostats()
             }.apply {
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             }
