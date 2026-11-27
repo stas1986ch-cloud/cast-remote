@@ -55,6 +55,20 @@
             android:layout_height="2dp"
             android:layout_marginTop="6dp"
             android:background="#3300FFFF" />
+
+        <Button
+            android:id="@+id/btn_hub_hidden_tiles"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/tile_selector"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="Hidden Tiles (0)"
+            android:textAllCaps="false"
+            android:textColor="#9CA3AF"
+            android:textSize="12sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <!-- Scrollable centered Hub tiles -->
