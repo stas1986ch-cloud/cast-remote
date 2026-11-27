@@ -1,8 +1,8 @@
 /**
  * @file GoogleHomePowerBridge.kt
- * @summary Full-registry Google Home SDK bridge (v3.1) executing Android/Google Home TV power-off across OnOff, LowPower.sleep(), KeypadInput(PowerOffFunction), and ExtendedKeypadInput.
- * @description Registers 100% of Standard, Google, and Synthetic device types and traits so streaming sticks/boxes/TVs (e.g. Master Bedroom TV) expose all power traits across device.types() and parts, with detailed trait diagnostics.
- * @testing Compiled against Kotlin 2.4.0 stdlib + kotlinx-coroutines 1.11.0 + play-services-home 17.1.0 via Gradle assembleRelease (v3.1).
+ * @summary Full-registry Google Home SDK bridge (v3.6) with resilient cold-start permission handling, deduplicated 52-device sync, and multi-trait TV power control.
+ * @description Registers 100% of Standard, Google, and Synthetic device types/traits with a job-free Dispatchers.IO HomeConfig, separates true OAuth consent errors (AUTH_REQUIRED:) from transient cold-start timeouts (TRANSIENT:), and executes OnOff/LowPower/KeypadInput/ExtendedKeypadInput with clear Error 19 HDMI-CEC diagnostics.
+ * @testing Validated via gradlew assembleRelease + lintVitalRelease and automated cold-restart E2E scripts on emulator-5554 release APK.
  */
 package com.project.autoswitch.ui.cast
 
@@ -31,12 +31,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -70,10 +72,14 @@ object GoogleHomePowerBridge {
         fun onSynced(devices: List<HomeDeviceSnapshot>, statusNote: String?)
     }
 
+    const val AUTH_REQUIRED_PREFIX = "AUTH_REQUIRED:"
+    const val TRANSIENT_PREFIX = "TRANSIENT:"
+
     private const val CRASH_FILE = "last_crash.txt"
     private const val DIAG_FILE = "cast_diag.txt"
 
     private val consentInFlight = AtomicBoolean(false)
+    private val syncInFlight = AtomicBoolean(false)
     private val autoPromptedSession = AtomicBoolean(false)
     private val devicesByKey = ConcurrentHashMap<String, HomeDevice>()
     private val devicesByLowerName = ConcurrentHashMap<String, HomeDevice>()
@@ -81,6 +87,11 @@ object GoogleHomePowerBridge {
 
     @Volatile private var sharedClient: HomeClient? = null
     @Volatile private var lastSyncMs = 0L
+
+    @JvmStatic
+    fun isSyncRecentlyCompleted(withinMs: Long): Boolean {
+        return latestSnapshots.isNotEmpty() && (System.currentTimeMillis() - lastSyncMs) in 0..withinMs
+    }
 
     private val homeCoroutineHandler = CoroutineExceptionHandler { _, throwable ->
         val _ignored = throwable.message
@@ -328,24 +339,44 @@ object GoogleHomePowerBridge {
         }
     }
 
+    private suspend fun awaitPermissionState(activity: ComponentActivity, hc: HomeClient): PermissionsState? {
+        val firstTry = try {
+            withTimeoutOrNull(22_000) {
+                hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
+            }
+        } catch (_: Throwable) { null }
+        if (firstTry != null) return firstTry
+
+        logDiag(activity, "hasPermissions() still initializing after 22s — retrying...")
+        delay(1_500)
+        return try {
+            withTimeoutOrNull(15_000) {
+                hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
+            }
+        } catch (_: Throwable) { null }
+    }
+
     internal suspend fun requestConsentIfNeeded(
         activity: ComponentActivity,
         hc: HomeClient,
         allowPrompt: Boolean,
         forceLaunch: Boolean = false
     ): String? {
-        val permState = withTimeout(10_000) {
-            hc.hasPermissions().first { it != PermissionsState.PERMISSIONS_STATE_UNINITIALIZED }
-        }
+        val permState = awaitPermissionState(activity, hc)
         if (!forceLaunch) {
             if (permState == PermissionsState.GRANTED) return null
-            if (!allowPrompt) return "Tap 'Connect / Manage Google Home Devices' under the title"
+            if (permState == null) {
+                return "${TRANSIENT_PREFIX}Google Home still connecting — retrying..."
+            }
+            if (!allowPrompt) {
+                return "${AUTH_REQUIRED_PREFIX}Tap 'Connect / Manage Google Home Devices' under the title"
+            }
         }
-        if (!consentInFlight.compareAndSet(false, true)) return "Google Home selector already open"
+        if (!consentInFlight.compareAndSet(false, true)) return "${TRANSIENT_PREFIX}Google Home selector already open"
         return try {
             val existingStructId = if (permState == PermissionsState.GRANTED) {
                 try {
-                    withTimeout(5_000) { hc.structures().first().firstOrNull()?.id?.id }
+                    withTimeout(6_000) { hc.structures().first().firstOrNull()?.id?.id }
                 } catch (_: Throwable) { null }
             } else null
 
@@ -368,11 +399,11 @@ object GoogleHomePowerBridge {
             }
             logDiag(activity, "Consent result: ${res.status} ${res.errorMessage ?: ""}")
             if (res.status == PermissionsResultStatus.SUCCESS) null
-            else "Google Home consent: ${res.status}"
+            else "${AUTH_REQUIRED_PREFIX}Google Home consent: ${res.status}"
         } catch (t: Throwable) {
             val r = "Google Home login error: ${t.message}"
             logDiag(activity, r)
-            r
+            "${AUTH_REQUIRED_PREFIX}$r"
         } finally {
             consentInFlight.set(false)
         }
@@ -483,6 +514,12 @@ object GoogleHomePowerBridge {
         forceReconsent: Boolean,
         callback: HomeSyncCallback
     ) {
+        if (!forceReconsent && !syncInFlight.compareAndSet(false, true)) {
+            if (latestSnapshots.isNotEmpty()) {
+                callback.onSynced(ArrayList(latestSnapshots), null)
+            }
+            return
+        }
         activity.lifecycleScope.launch(Dispatchers.IO + homeCoroutineHandler) {
             try {
                 if (activity.isFinishing || activity.isDestroyed) return@launch
@@ -498,7 +535,13 @@ object GoogleHomePowerBridge {
                     return@launch
                 }
 
-                var snapshots = collectSnapshotsFromClient(activity, hc)
+                var snapshots = try {
+                    collectSnapshotsFromClient(activity, hc)
+                } catch (t: Throwable) {
+                    logDiag(activity, "Initial snapshot sync interrupted (${t.javaClass.simpleName}) — retrying once...")
+                    delay(2_000)
+                    collectSnapshotsFromClient(activity, hc)
+                }
                 // If permission appeared granted yet 0 devices were returned (stale/revoked/unshared structure),
                 // automatically prompt to reauthorize when allowed!
                 if (snapshots.isEmpty() && promptIfNeeded && !forceReconsent) {
@@ -519,7 +562,9 @@ object GoogleHomePowerBridge {
             } catch (t: Throwable) {
                 val err = "${t.javaClass.simpleName}: ${t.message}"
                 logDiag(activity, "syncAllHomeDevices failed: $err")
-                callback.onSynced(emptyList(), err)
+                callback.onSynced(emptyList(), "${TRANSIENT_PREFIX}Google Home sync delayed ($err)")
+            } finally {
+                syncInFlight.set(false)
             }
         }
     }
@@ -550,6 +595,7 @@ object GoogleHomePowerBridge {
         val traitsSummary = summarizeAllTraits(endpoints)
 
         // 1. Standard / Cloud OnOff trait across any DeviceType or child part
+        var lastOnOffErr: String? = null
         val onOff = findTraitAcrossEndpoints(endpoints, OnOff)
         if (onOff != null) {
             try {
@@ -558,6 +604,7 @@ object GoogleHomePowerBridge {
                 logDiag(activity, "Power OK: $msg")
                 return true to dev.name
             } catch (t: Throwable) {
+                lastOnOffErr = t.message
                 logDiag(activity, "OnOff.${if (turnOn) "on" else "off"} threw on '${dev.name}': ${t.message}")
             }
         }
@@ -618,7 +665,12 @@ object GoogleHomePowerBridge {
             }
         }
 
-        return false to "traits=[$traitsSummary]"
+        val reason = if (lastOnOffErr != null && (lastOnOffErr.contains("19:") || lastOnOffErr.contains("Command errors"))) {
+            "TV rejected HDMI-CEC power ${if (turnOn) "ON" else "OFF"} (Error 19: check TV HDMI-CEC or Gen-1 Chromecast limitation)"
+        } else {
+            "traits=[$traitsSummary]"
+        }
+        return false to reason
     }
 
     @JvmStatic
@@ -628,8 +680,12 @@ object GoogleHomePowerBridge {
                 val hc = getOrCreateClient(activity)
                 val permErr = requestConsentIfNeeded(activity, hc, allowPrompt = true, forceLaunch = false)
                 if (permErr != null) {
-                    logDiag(activity, "setPower('$deviceName') blocked: $permErr")
-                    callback.onResult(false, permErr)
+                    val cleanPermErr = permErr
+                        .removePrefix(AUTH_REQUIRED_PREFIX)
+                        .removePrefix(TRANSIENT_PREFIX)
+                        .trim()
+                    logDiag(activity, "setPower('$deviceName') blocked: $cleanPermErr")
+                    callback.onResult(false, cleanPermErr)
                     return@launch
                 }
                 var dev = lookupDevice(homeKeyOrId, deviceName)

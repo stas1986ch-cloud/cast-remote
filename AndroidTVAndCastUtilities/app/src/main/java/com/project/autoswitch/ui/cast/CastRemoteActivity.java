@@ -1,8 +1,8 @@
 /**
  * @file CastRemoteActivity.java
- * @summary Unified Cast & Smart Home Remote screen (v3.0) with real Google Home / ATV Remote TV power-off, 1-tap Home TV power linking, versioned logs, and stored default sound levels.
- * @description Always executes real hardware power-off via Google Home OnOff.off() or Android TV Remote POWER_OFF (never cutting the Cast stream as a fake power-off), lets users link mismatched Cast/Home TV names in 1 tap, and auto-applies default sound levels.
- * @testing Compiled and lint-checked via Gradle assembleRelease (v3.0).
+ * @summary Unified Cast & Smart Home Remote screen (v3.6) with real Google Home / ATV Remote TV power control, live Chromecast/Home TV status, resilient cold-start sync, and stored default sound levels.
+ * @description Executes real hardware power-off via Google Home OnOff/LowPower/KeypadInput or Android TV Remote POWER_OFF, wakes TVs via Cast HDMI-CEC + Google Home OnOff.on(), ignores transient cold-start timeouts so already-authorized users never get false re-auth popups, and persists accurate ON/OFF states.
+ * @testing Validated via gradlew assembleRelease + lintVitalRelease and automated emulator E2E scripts on release APK.
  */
 package com.project.autoswitch.ui.cast;
 
@@ -912,16 +912,35 @@ public class CastRemoteActivity extends AppCompatActivity {
         return null;
     }
 
+    private boolean transientRetryScheduled = false;
+
     private void syncGoogleHomeDevices(boolean promptIfNeeded, boolean forceReconsent) {
         GoogleHomePowerBridge.syncAllHomeDevices(this, promptIfNeeded, forceReconsent, (snapshots, statusNote) -> {
             if (isFinishing() || isDestroyed()) return;
             if (snapshots == null || snapshots.isEmpty()) {
-                if (statusNote != null && (promptIfNeeded || forceReconsent)) {
-                    setStatus(statusNote);
-                    runSafeUi(() -> showReauthorizeHomeDialog(statusNote));
+                if (statusNote != null) {
+                    boolean isAuthRequired = statusNote.startsWith(GoogleHomePowerBridge.AUTH_REQUIRED_PREFIX);
+                    boolean isTransient = statusNote.startsWith(GoogleHomePowerBridge.TRANSIENT_PREFIX);
+                    String cleanNote = statusNote
+                            .replace(GoogleHomePowerBridge.AUTH_REQUIRED_PREFIX, "")
+                            .replace(GoogleHomePowerBridge.TRANSIENT_PREFIX, "")
+                            .trim();
+                    setStatus(cleanNote);
+                    if (isAuthRequired || (forceReconsent && !isTransient)) {
+                        runSafeUi(() -> showReauthorizeHomeDialog(cleanNote));
+                    } else if (isTransient && !transientRetryScheduled) {
+                        transientRetryScheduled = true;
+                        mainHandler.postDelayed(() -> {
+                            transientRetryScheduled = false;
+                            if (!isFinishing() && !isDestroyed()) {
+                                syncGoogleHomeDevices(false, false);
+                            }
+                        }, 3000L);
+                    }
                 }
                 return;
             }
+            transientRetryScheduled = false;
 
             Set<String> seenHomeOnlyKeys = new HashSet<>();
             for (GoogleHomePowerBridge.HomeDeviceSnapshot snap : snapshots) {
@@ -1128,7 +1147,9 @@ public class CastRemoteActivity extends AppCompatActivity {
                 } catch (Exception ignored) {}
             }
             saveDevicesToPrefs();
-            syncGoogleHomeDevices(false, false);
+            if (!GoogleHomePowerBridge.isSyncRecentlyCompleted(10_000L)) {
+                syncGoogleHomeDevices(false, false);
+            }
             runSafeUi(() -> {
                 renderDevices();
                 updateReadySummary();
