@@ -11,7 +11,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.activity.ComponentActivity
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.lifecycleScope
@@ -171,7 +177,9 @@ object NestThermostatBridge {
     private const val KEY_MIN_TEMP_F = "min_temp_f"
     private const val KEY_RESET_TEMP_F = "reset_temp_f"
     private const val KEY_POLL_MIN = "poll_interval_min"
-    private const val CHANNEL_ALERTS = "nest_temp_alerts"
+    private const val CHANNEL_ALERTS = "nest_temp_alerts_critical_v2"
+    private val CRITICAL_VIBRATION_PATTERN = longArrayOf(0, 650, 180, 650, 180, 900, 220, 900)
+    private val CRITICAL_VIBRATION_AMPS = intArrayOf(0, 255, 0, 255, 0, 255, 0, 255)
 
     private val devicesByKey = ConcurrentHashMap<String, HomeDevice>()
     private val lastLowAlertMs = ConcurrentHashMap<String, Long>()
@@ -491,20 +499,66 @@ object NestThermostatBridge {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ALERTS) == null) {
+                val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val audioAttrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
                 val ch = NotificationChannel(
                     CHANNEL_ALERTS,
-                    "Nest Thermostat Alerts",
+                    "Nest Thermostat Critical Alerts",
                     NotificationManager.IMPORTANCE_HIGH
                 ).apply {
-                    description = "Alerts when a Nest thermostat changes temperature or drops below your threshold."
+                    description = "Critical alarm buzz & sound when a Nest thermostat changes temperature or drops below your threshold."
+                    enableVibration(true)
+                    vibrationPattern = CRITICAL_VIBRATION_PATTERN
+                    enableLights(true)
+                    lightColor = Color.RED
+                    setBypassDnd(true)
+                    setSound(alarmUri, audioAttrs)
+                    lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 }
                 nm.createNotificationChannel(ch)
             }
         }
     }
 
+    private fun triggerCriticalBuzz(context: Context) {
+        try {
+            val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = if (vibrator.hasAmplitudeControl()) {
+                    VibrationEffect.createWaveform(CRITICAL_VIBRATION_PATTERN, CRITICAL_VIBRATION_AMPS, -1)
+                } else {
+                    VibrationEffect.createWaveform(CRITICAL_VIBRATION_PATTERN, -1)
+                }
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(
+                    effect,
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(CRITICAL_VIBRATION_PATTERN, -1)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     fun postAlertNotification(context: Context, id: Int, title: String, body: String) {
         ensureAlertChannel(context)
+        triggerCriticalBuzz(context)
         val intent = Intent(context, NestMonitorActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -514,12 +568,18 @@ object NestThermostatBridge {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         val notif = NotificationCompat.Builder(context, CHANNEL_ALERTS)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVibrate(CRITICAL_VIBRATION_PATTERN)
+            .setSound(alarmUri)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .build()
