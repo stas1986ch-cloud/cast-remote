@@ -129,6 +129,9 @@ public class CastRemoteActivity extends AppCompatActivity {
         String homeTypeSummary;
         boolean powerOffUnsupported;
         String powerOffNote;
+        boolean supportsAtvRemote;
+        boolean atvRemoteChecked;
+        boolean isCastOnlyDongle;
 
         DeviceItem(String id, String name, String model, String state, String title,
                    boolean isPhone, boolean hasCast, String host, int port) {
@@ -152,6 +155,9 @@ public class CastRemoteActivity extends AppCompatActivity {
             this.homeTypeSummary = "";
             this.powerOffUnsupported = false;
             this.powerOffNote = "";
+            this.supportsAtvRemote = false;
+            this.atvRemoteChecked = false;
+            this.isCastOnlyDongle = false;
         }
     }
 
@@ -622,7 +628,9 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private boolean supportsPairButton(DeviceItem d, DeviceKind kind) {
         if (d.isPhone || !d.hasCast || d.host.isEmpty()) return false;
-        return kind == DeviceKind.TV || kind == DeviceKind.PROJECTOR;
+        if (kind != DeviceKind.TV && kind != DeviceKind.PROJECTOR) return false;
+        if (engine.isPaired(d.id)) return true;
+        return d.supportsAtvRemote;
     }
 
     private boolean supportsVolumeControl(DeviceItem d) {
@@ -1110,6 +1118,12 @@ public class CastRemoteActivity extends AppCompatActivity {
                 item.homeTypeSummary = o.optString("homeTypeSummary", "");
                 item.powerOffUnsupported = o.optBoolean("powerOffUnsupported", false);
                 item.powerOffNote = o.optString("powerOffNote", "");
+                if (o.has("supportsAtvRemote") && !o.isNull("supportsAtvRemote")) {
+                    item.supportsAtvRemote = o.optBoolean("supportsAtvRemote");
+                }
+                item.supportsAtvRemote = o.optBoolean("supportsAtvRemote", false);
+                item.atvRemoteChecked = o.optBoolean("atvRemoteChecked", false);
+                item.isCastOnlyDongle = o.optBoolean("isCastOnlyDongle", false) || isCastOnlyModel(item.model);
                 String savedUnsup = lookupUnsupportedPowerNote(item);
                 if (!savedUnsup.isEmpty()) {
                     item.powerOffUnsupported = true;
@@ -1155,6 +1169,10 @@ public class CastRemoteActivity extends AppCompatActivity {
                 o.put("homeTypeSummary", d.homeTypeSummary != null ? d.homeTypeSummary : "");
                 o.put("powerOffUnsupported", d.powerOffUnsupported);
                 o.put("powerOffNote", d.powerOffNote != null ? d.powerOffNote : "");
+                o.put("supportsAtvRemote", d.supportsAtvRemote);
+                o.put("supportsAtvRemote", d.supportsAtvRemote);
+                o.put("atvRemoteChecked", d.atvRemoteChecked);
+                o.put("isCastOnlyDongle", d.isCastOnlyDongle);
                 arr.put(o);
             }
             getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -1172,6 +1190,12 @@ public class CastRemoteActivity extends AppCompatActivity {
 
     private boolean isMediaHomeCategory(String cat) {
         return "TV".equals(cat) || "PROJECTOR".equals(cat) || "SPEAKER".equals(cat) || "DISPLAY".equals(cat);
+    }
+
+    private boolean isCastOnlyModel(String model) {
+        if (model == null) return false;
+        String m = model.trim().toLowerCase(Locale.US);
+        return m.equals("chromecast") || m.equals("chromecast ultra") || m.equals("eureka dongle");
     }
 
     private DeviceItem findMatchingCastDevice(GoogleHomePowerBridge.HomeDeviceSnapshot snap) {
@@ -1251,6 +1275,9 @@ public class CastRemoteActivity extends AppCompatActivity {
                     }
                     matchedCast.homeCategory = snap.category;
                     matchedCast.homeTypeSummary = snap.typeSummary;
+                    if (snap.isCastOnlyDongle && !matchedCast.supportsAtvRemote) {
+                        matchedCast.isCastOnlyDongle = true;
+                    }
                     if (snap.powerOffUnsupported) {
                         markPowerOffUnsupported(matchedCast, snap.powerOffNote);
                     } else {
@@ -1288,6 +1315,9 @@ public class CastRemoteActivity extends AppCompatActivity {
                     }
                     item.homeCategory = snap.category;
                     item.homeTypeSummary = snap.typeSummary;
+                    if (snap.isCastOnlyDongle && !item.supportsAtvRemote) {
+                        item.isCastOnlyDongle = true;
+                    }
                     if (!isMediaHomeCategory(snap.category)) {
                         if (item.powerOffUnsupported) {
                             clearPowerOffUnsupported(item);
@@ -1371,6 +1401,12 @@ public class CastRemoteActivity extends AppCompatActivity {
                 item.supportsHomeOnOff = existing.supportsHomeOnOff;
                 item.homeCategory = existing.homeCategory;
                 item.homeTypeSummary = existing.homeTypeSummary;
+                item.supportsAtvRemote = existing.supportsAtvRemote;
+                item.atvRemoteChecked = existing.atvRemoteChecked;
+                item.isCastOnlyDongle = existing.isCastOnlyDongle;
+            }
+            if (isCastOnlyModel(item.model) && !item.supportsAtvRemote) {
+                item.isCastOnlyDongle = true;
             }
             String persistedLink = linkedHomeKeys.get(uid);
             if (persistedLink != null && !persistedLink.isEmpty()) {
@@ -1456,8 +1492,21 @@ public class CastRemoteActivity extends AppCompatActivity {
                     Boolean isCc1 = engine.detectChromecastGen1(tv.host);
                     if (Boolean.TRUE.equals(isCc1) && !engine.isPaired(tv.id)) {
                         markPowerOffUnsupported(tv, "Unsupported w/ Chromecast 1");
+                        tv.supportsAtvRemote = false;
                     } else if (Boolean.FALSE.equals(isCc1) && tv.powerOffUnsupported) {
                         clearPowerOffUnsupported(tv);
+                    }
+                    if (!Boolean.TRUE.equals(isCc1)) {
+                        boolean hasAtv = engine.isPaired(tv.id) || engine.probeAtvRemoteSupported(tv.host);
+                        tv.supportsAtvRemote = hasAtv;
+                    }
+                    boolean atvOk = engine.supportsAndroidTvRemote(tv.host);
+                    tv.supportsAtvRemote = atvOk;
+                    tv.atvRemoteChecked = true;
+                    if (atvOk) {
+                        tv.isCastOnlyDongle = false;
+                    } else if (isCastOnlyModel(tv.model)) {
+                        tv.isCastOnlyDongle = true;
                     }
                 } catch (Exception ignored) {}
             }
@@ -2071,25 +2120,48 @@ public class CastRemoteActivity extends AppCompatActivity {
             btnSched.setOnClickListener(v -> showSchedulePowerOffDialog(dev));
 
             if (supportsPairButton(dev, kind)) {
-                Button btnPair = makeControlSquare(
-                        isPaired ? "Paired ✓" : "Pair TV Remote",
-                        isPaired ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
-                        Color.WHITE,
-                        isPaired ? Color.TRANSPARENT : COL_SLATE_TOP);
-                btnPair.setOnClickListener(v -> pairTv(dev));
-                card.addView(makeTwoUpRow(btnSched, btnPair, 8));
+                boolean atvUnsupported = !isPaired && (dev.isCastOnlyDongle || (dev.atvRemoteChecked && !dev.supportsAtvRemote));
+                if (atvUnsupported) {
+                    Button btnNoAtv = makeControlSquare(
+                            "⌨ Keyboard (N/A)",
+                            new int[]{Color.parseColor("#1A202E"), Color.parseColor("#1A202E")},
+                            COL_MUTED,
+                            Color.parseColor("#2E3748"));
+                    btnNoAtv.setAlpha(0.50f);
+                    btnNoAtv.setOnClickListener(v -> {
+                        String msg = dev.name + ": Keyboard & PIN pairing require Android TV / Google TV (not Chromecast dongles).";
+                        setStatus(msg);
+                        Toast.makeText(this, "Keyboard requires Android TV / Google TV (not Chromecast)", Toast.LENGTH_SHORT).show();
+                    });
+                    card.addView(makeTwoUpRow(btnSched, btnNoAtv, 8));
 
-                Button btnKeyboard = makeControlSquare(
-                        "⌨ Keyboard / Passwords & D-Pad",
-                        new int[]{COL_VIOLET, COL_CYAN},
-                        Color.WHITE,
-                        Color.TRANSPARENT);
-                LinearLayout.LayoutParams kbLp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, dp(CONTROL_SQUARE_HEIGHT_DP));
-                kbLp.topMargin = dp(8);
-                btnKeyboard.setLayoutParams(kbLp);
-                btnKeyboard.setOnClickListener(v -> openTvKeyboardRemoteDialog(dev));
-                card.addView(btnKeyboard);
+                    TextView kbNote = new TextView(this);
+                    kbNote.setText("\u2139  Keyboard & PIN pairing: Android TV / Google TV only (unsupported on Chromecast dongles)");
+                    kbNote.setTextColor(COL_MUTED);
+                    kbNote.setTextSize(11f);
+                    kbNote.setPadding(dp(4), dp(6), dp(4), 0);
+                    card.addView(kbNote);
+                } else {
+                    Button btnPair = makeControlSquare(
+                            isPaired ? "Paired ✓" : "Pair TV Remote",
+                            isPaired ? new int[]{COL_EMERALD, COL_CYAN} : new int[]{COL_SLATE_TOP, COL_SLATE_BOT},
+                            Color.WHITE,
+                            isPaired ? Color.TRANSPARENT : COL_SLATE_TOP);
+                    btnPair.setOnClickListener(v -> pairTv(dev));
+                    card.addView(makeTwoUpRow(btnSched, btnPair, 8));
+
+                    Button btnKeyboard = makeControlSquare(
+                            "⌨ Keyboard / Passwords & D-Pad",
+                            new int[]{COL_VIOLET, COL_CYAN},
+                            Color.WHITE,
+                            Color.TRANSPARENT);
+                    LinearLayout.LayoutParams kbLp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, dp(CONTROL_SQUARE_HEIGHT_DP));
+                    kbLp.topMargin = dp(8);
+                    btnKeyboard.setLayoutParams(kbLp);
+                    btnKeyboard.setOnClickListener(v -> openTvKeyboardRemoteDialog(dev));
+                    card.addView(btnKeyboard);
+                }
             } else {
                 LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, dp(CONTROL_SQUARE_HEIGHT_DP));
@@ -2243,6 +2315,12 @@ public class CastRemoteActivity extends AppCompatActivity {
             Toast.makeText(this, "TV IP address unavailable — tap Refresh & Sync.", Toast.LENGTH_SHORT).show();
             return;
         }
+        if (!engine.isPaired(dev.id) && (dev.isCastOnlyDongle || (dev.atvRemoteChecked && !dev.supportsAtvRemote))) {
+            String msg = dev.name + ": Keyboard & PIN pairing require Android TV / Google TV (not Chromecast dongles).";
+            setStatus(msg);
+            Toast.makeText(this, "Keyboard requires Android TV / Google TV (not Chromecast)", Toast.LENGTH_LONG).show();
+            return;
+        }
         if (!engine.isPaired(dev.id)) {
             Toast.makeText(this, "Pair " + dev.name + " once with its 6-char TV PIN to unlock Keyboard & D-Pad.", Toast.LENGTH_LONG).show();
             pairTv(dev);
@@ -2277,6 +2355,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                         Toast.makeText(this, "Typed to " + dev.name, Toast.LENGTH_SHORT).show();
                     });
                 } catch (Exception e) {
+                    GoogleHomePowerBridge.logDiag(this, "Type keys failed on '" + dev.name + "': " + e.getMessage());
                     runSafeUi(() -> setStatus("Type keys failed: " + e.getMessage()));
                 }
             });
@@ -2295,6 +2374,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                         Toast.makeText(this, "Sent text to " + dev.name, Toast.LENGTH_SHORT).show();
                     });
                 } catch (Exception e) {
+                    GoogleHomePowerBridge.logDiag(this, "IME send failed on '" + dev.name + "': " + e.getMessage());
                     runSafeUi(() -> setStatus("IME send failed: " + e.getMessage()));
                 }
             });
@@ -2308,6 +2388,7 @@ public class CastRemoteActivity extends AppCompatActivity {
                 try {
                     engine.sendRemoteKey(dev.id, dev.host, keyCode);
                 } catch (Exception e) {
+                    GoogleHomePowerBridge.logDiag(this, "Remote key failed on '" + dev.name + "': " + e.getMessage());
                     runSafeUi(() -> setStatus("Remote key failed: " + e.getMessage()));
                 }
             });
@@ -2922,13 +3003,37 @@ public class CastRemoteActivity extends AppCompatActivity {
     }
 
     private void pairTv(DeviceItem dev) {
+        if (!engine.isPaired(dev.id) && (dev.isCastOnlyDongle || (dev.atvRemoteChecked && !dev.supportsAtvRemote))) {
+            String msg = dev.name + ": Keyboard & PIN pairing require Android TV / Google TV (not Chromecast dongles).";
+            setStatus(msg);
+            Toast.makeText(this, "PIN pairing requires Android TV / Google TV (not Chromecast)", Toast.LENGTH_LONG).show();
+            return;
+        }
         setStatus("Connecting to " + dev.name + " for PIN pairing...");
         runSafeBg(() -> {
             try {
                 engine.beginPairing(dev.id, dev.host);
+                dev.supportsAtvRemote = true;
+                dev.atvRemoteChecked = true;
+                dev.isCastOnlyDongle = false;
+                saveDevicesToPrefs();
                 runSafeUi(() -> showPinDialog(dev, false));
             } catch (Exception e) {
-                setStatus("Pair " + dev.name + " failed: " + e.getMessage());
+                String err = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                GoogleHomePowerBridge.logDiag(this, "Pair '" + dev.name + "' failed: " + err);
+                if (err.contains("ECONNREFUSED") || err.toLowerCase(Locale.US).contains("connection refused")) {
+                    dev.supportsAtvRemote = false;
+                    dev.atvRemoteChecked = true;
+                    dev.isCastOnlyDongle = true;
+                    saveDevicesToPrefs();
+                    runSafeUi(() -> {
+                        renderDevices();
+                        setStatus(dev.name + ": Keyboard & PIN pairing require Android TV / Google TV (not Chromecast dongles).");
+                        Toast.makeText(this, dev.name + " does not support Android TV Keyboard/PIN pairing", Toast.LENGTH_LONG).show();
+                    });
+                } else {
+                    setStatus("Pair " + dev.name + " failed: " + err);
+                }
             }
         });
     }

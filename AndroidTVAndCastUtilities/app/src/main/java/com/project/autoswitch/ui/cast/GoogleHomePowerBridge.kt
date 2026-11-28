@@ -63,7 +63,8 @@ object GoogleHomePowerBridge {
         @JvmField val powerOn: Boolean?,   // null when device doesn't report readable power state
         @JvmField val mediaState: String,  // PLAYING, PAUSED, BUFFERING, STANDBY, ACTIVE, or ""
         @JvmField val powerOffUnsupported: Boolean = false,
-        @JvmField val powerOffNote: String = ""
+        @JvmField val powerOffNote: String = "",
+        @JvmField val isCastOnlyDongle: Boolean = false
     )
 
     fun interface PowerCallback {
@@ -487,6 +488,9 @@ object GoogleHomePowerBridge {
                             val isCastTv = (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") &&
                                 (prodName.contains("Chromecast", ignoreCase = true) || prodName.contains("Eureka", ignoreCase = true))
                             val isGen1ByBasicInfo = isCastTv && swVer.startsWith("1.36.")
+                            val isCastOnlyDongle = prodName.equals("Chromecast", ignoreCase = true) ||
+                                prodName.equals("Chromecast Ultra", ignoreCase = true) ||
+                                prodName.equals("Eureka Dongle", ignoreCase = true)
 
                             if (cat == "TV" || cat == "PROJECTOR" || cat == "DISPLAY") {
                                 logDiag(
@@ -505,7 +509,8 @@ object GoogleHomePowerBridge {
                                 powerOn = livePower,
                                 mediaState = mediaLabel,
                                 powerOffUnsupported = isGen1ByBasicInfo,
-                                powerOffNote = if (isGen1ByBasicInfo) "Unsupported w/ Chromecast 1" else ""
+                                powerOffNote = if (isGen1ByBasicInfo) "Unsupported w/ Chromecast 1" else "",
+                                isCastOnlyDongle = isCastOnlyDongle
                             )
                         }
                     }

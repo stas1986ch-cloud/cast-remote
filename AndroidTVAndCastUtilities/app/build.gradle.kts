@@ -1,8 +1,8 @@
 /**
  * @file build.gradle.kts
- * @summary Gradle module configuration for Google Screen Control and Cast (v3.7).
+ * @summary Gradle module configuration for Google Screen Control and Cast (v3.9).
  * @description Configures SDK 35, authorized Google Home OAuth applicationId, Kotlin 2.4.0 stdlib alignment, and Play Services Home 17.1.0 dependencies.
- * @testing Validated live on emulator-5554 (release APK) against Kitchen TV (Chromecast 1 gray-out) and Master Bedroom TV, plus gradlew assembleRelease + lintVitalRelease.
+ * @testing Validated live on emulator release APK and via gradlew assembleRelease + lintVitalRelease.
  */
 plugins {
     alias(libs.plugins.android.application)
@@ -16,8 +16,8 @@ android {
         applicationId = "com.stas.castremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 39
-        versionName = "3.8"
+        versionCode = 40
+        versionName = "3.9"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

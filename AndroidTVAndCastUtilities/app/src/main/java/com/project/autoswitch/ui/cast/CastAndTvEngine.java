@@ -230,6 +230,22 @@ public final class CastAndTvEngine {
      * Gen-1 Chromecast (final EOL build 1.36.x), which does not support HDMI-CEC Power Off.
      * Returns Boolean.TRUE for Gen-1, Boolean.FALSE for Gen-2+/Google TV, or null if unreachable.
      */
+    /**
+     * Fast TCP probe for Android TV Remote v2 ports (6467 pairing / 6466 remote).
+     * Returns true for Android TV / Google TV boxes (e.g. SHIELD) and false for Chromecast-only dongles.
+     */
+    public boolean supportsAndroidTvRemote(String host) {
+        if (host == null || host.isEmpty()) return false;
+        int[] ports = new int[]{ATV_PAIRING_PORT, ATV_REMOTE_PORT};
+        for (int p : ports) {
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new InetSocketAddress(host, p), 900);
+                return true;
+            } catch (Exception ignored) {}
+        }
+        return false;
+    }
+
     public Boolean detectChromecastGen1(String host) {
         if (host == null || host.isEmpty()) return null;
         HttpURLConnection conn = null;
@@ -796,14 +812,14 @@ public final class CastAndTvEngine {
                                 CastWire.stringField(2, Build.MANUFACTURER),
                                 CastWire.varintField(3, 1),
                                 CastWire.stringField(4, "1"),
-                                CastWire.stringField(5, "com.screencontrol.cast"),
-                                CastWire.stringField(6, "3.8")
+                                CastWire.stringField(5, appContext.getPackageName()),
+                                CastWire.stringField(6, "3.9")
                         );
-                        byte[] cfg = CastWire.concat(CastWire.varintField(1, 622), CastWire.bytesField(2, info));
+                        byte[] cfg = CastWire.concat(CastWire.varintField(1, 623), CastWire.bytesField(2, info));
                         writeAtvFramed(sock, CastWire.bytesField(1, cfg));
                         configured = true;
                     } else if (f.number == 2) {
-                        writeAtvFramed(sock, CastWire.bytesField(2, CastWire.varintField(1, 622)));
+                        writeAtvFramed(sock, CastWire.bytesField(2, CastWire.varintField(1, 623)));
                         activeSet = true;
                     } else if (f.number == 8 && f.isBytes && f.bytes != null) {
                         long val1 = 0L;
@@ -919,6 +935,22 @@ public final class CastAndTvEngine {
             case '~': return new long[]{68L, 1L};
             default: return null;
         }
+    }
+
+    /**
+     * Fast TCP probe on port 6467/6466 to verify whether a Cast device actually runs Android TV / Google TV Remote v2.
+     * Returns true for Android TV / Google TV devices, false for legacy Chromecast dongles and non-Google TVs.
+     */
+    public boolean probeAtvRemoteSupported(String host) {
+        if (host == null || host.isEmpty()) return false;
+        int[] ports = new int[]{ATV_PAIRING_PORT, ATV_REMOTE_PORT};
+        for (int p : ports) {
+            try (java.net.Socket s = new java.net.Socket()) {
+                s.connect(new InetSocketAddress(host, p), 900);
+                return true;
+            } catch (Exception ignored) {}
+        }
+        return false;
     }
 
     public Boolean sendPower(String deviceId, String host, PowerAction action) throws Exception {
